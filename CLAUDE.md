@@ -64,6 +64,26 @@ Files must satisfy 12 rules enforced by `form.py`:
 10. References section (if present) must be the final section
 11–12. Reference lines formatted as `| Author (year) *Italicized Title*`
 
+## Distribution
+
+To build a wheel for distribution (no internet required on the recipient's machine):
+
+```bash
+pip install build
+python -m build
+# produces dist/mdc-0.1.0-py3-none-any.whl
+```
+
+Recipients install it with:
+
+```bash
+pip install mdc-0.1.0-py3-none-any.whl
+# or, recommended for CLI tools:
+pipx install mdc-0.1.0-py3-none-any.whl
+```
+
+Bump `version` in `pyproject.toml` before each build. The wheel filename reflects that version.
+
 ## Configuration
 
 Users create `~/.config/mdc/config.toml`:

@@ -8,13 +8,12 @@ Format rules:
   3. Date line immediately after title: yyyy-mm-dd
   4. Filename derived from title and date
   5. Blank line after date
-  6. Arbitrary sections with ## headers
-  7. Each section header is exactly one word
-  8. The word is a personal name, "Prompt", "Claude", or "GPT"
-  9. Each section is preceded and followed by a blank line
- 10. References, if present, must be the final section
- 11. Each reference: | Last, First (year) *Title*
- 12. Multi-author: | Last1, First1, First2 Last2, ... (year) *Title*
+  6. Arbitrary sections with ## headers (one or more words)
+  7. '## ChatGPT' is disallowed — use '## GPT' instead
+  8. Each section is preceded and followed by a blank line
+  9. References, if present, must be the final section
+ 10. Each reference: | Last, First (year) *Title*
+ 11. Multi-author: | Last1, First1, First2 Last2, ... (year) *Title*
 
 Note: Rule 11's "| " prefix is enforced during `mdc validate` but is not required
 by `mdc reply`'s reference parser, which follows the AI output format.
@@ -25,6 +24,53 @@ from pathlib import Path
 
 
 KNOWN_LLMS = {"Claude", "GPT"}
+
+# ── RTL span encoding ─────────────────────────────────────────────────────────
+
+# Matches pandoc-style [char]{dir="rtl"} spans that some converters emit.
+_RTL_SPAN_RE = re.compile(r'\[([^\]]*)\]\{dir="rtl"\}')
+
+# Typographic Unicode → plain ASCII, for chars that may appear inside spans.
+_UNICODE_TO_ASCII: dict[str, str] = {
+    "\u2018": "'",    # LEFT SINGLE QUOTATION MARK
+    "\u2019": "'",    # RIGHT SINGLE QUOTATION MARK
+    "\u201A": ",",    # SINGLE LOW-9 QUOTATION MARK
+    "\u201B": "'",    # SINGLE HIGH-REVERSED-9 QUOTATION MARK
+    "\u201C": '"',    # LEFT DOUBLE QUOTATION MARK
+    "\u201D": '"',    # RIGHT DOUBLE QUOTATION MARK
+    "\u201E": '"',    # DOUBLE LOW-9 QUOTATION MARK
+    "\u2013": "-",    # EN DASH
+    "\u2014": "--",   # EM DASH
+    "\u2026": "...",  # HORIZONTAL ELLIPSIS
+    "\u00AB": '"',    # LEFT-POINTING DOUBLE ANGLE QUOTATION MARK
+    "\u00BB": '"',    # RIGHT-POINTING DOUBLE ANGLE QUOTATION MARK
+    "\u2039": "'",    # SINGLE LEFT-POINTING ANGLE QUOTATION MARK
+    "\u203A": "'",    # SINGLE RIGHT-POINTING ANGLE QUOTATION MARK
+}
+
+
+def _ascii_equivalent(text: str) -> str:
+    """Normalise typographic Unicode to plain ASCII."""
+    return "".join(_UNICODE_TO_ASCII.get(ch, ch) for ch in text)
+
+
+def fix_rtl_spans(lines: list[str]) -> tuple[list[str], list[str]]:
+    """
+    Replace [char]{dir="rtl"} spans with plain ASCII equivalents.
+
+    Returns (new_lines, fixes) where fixes is a list of human-readable
+    descriptions of what was changed.
+    """
+    new_lines: list[str] = []
+    fixes: list[str] = []
+    for i, line in enumerate(lines):
+        if _RTL_SPAN_RE.search(line):
+            new_line = _RTL_SPAN_RE.sub(lambda m: _ascii_equivalent(m.group(1)), line)
+            new_lines.append(new_line)
+            fixes.append(f"replaced RTL span(s) on line {i + 1}")
+        else:
+            new_lines.append(line)
+    return new_lines, fixes
 
 
 def slugify(title: str) -> str:
@@ -102,6 +148,7 @@ def fix_title_section(lines: list[str]) -> tuple[list[str], list[str]]:
       • Missing blank first line       → insert one
       • Date '*' delimiter(s) present  → remove the extra asterisk(s)
       • Missing blank line after date  → insert one
+      • '## ChatGPT' header            → replace with '## GPT'
 
     Not fixable here:
       • Malformed or absent title (# …) — can't reconstruct content
@@ -142,6 +189,20 @@ def fix_title_section(lines: list[str]) -> tuple[list[str], list[str]]:
         lines.insert(3, "")
         fixes.append("inserted blank line after date")
 
+    # ── fix 4: '## ChatGPT' → '## GPT' ───────────────────────────────
+    for i, line in enumerate(lines):
+        if line.strip() == "## ChatGPT":
+            lines[i] = "## GPT"
+            fixes.append(f"replaced '## ChatGPT' with '## GPT' on line {i + 1}")
+
+    # ── fix 5: bare labels → ## headers ──────────────────────────────
+    _BARE_HEADERS = {"Prompt:": "## Prompt", "ChatGPT:": "## GPT", "References:": "## References"}
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped in _BARE_HEADERS:
+            lines[i] = _BARE_HEADERS[stripped]
+            fixes.append(f"replaced '{stripped}' with '{_BARE_HEADERS[stripped]}' on line {i + 1}")
+
     return lines, fixes
 
 
@@ -159,6 +220,17 @@ def check_file(path: Path) -> list[str]:
 
     def err(lineno: int, msg: str) -> None:  # lineno is 1-based
         errors.append(f"line {lineno}: {msg}")
+
+    # ── RTL span encoding (whole-file scan) ───────────────────────────
+    for i, line in enumerate(lines):
+        if _RTL_SPAN_RE.search(line):
+            err(i + 1, 'contains [char]{dir="rtl"} encoding — run \'mdc fix\' to replace with plain ASCII')
+
+    # ── bare speaker labels (whole-file scan) ─────────────────────────
+    _BARE_LABELS = {"Prompt:", "ChatGPT:", "References:"}
+    for i, line in enumerate(lines):
+        if line.strip() in _BARE_LABELS:
+            err(i + 1, f"bare label '{line.strip()}' — use '## Prompt' / '## GPT' / '## References' instead")
 
     # ── 1. blank first line ───────────────────────────────────────────
     if n < 1 or lines[0].strip() != "":
@@ -205,34 +277,17 @@ def check_file(path: Path) -> list[str]:
         errors.append("no sections found (expected '## ...' headers)")
         return errors
 
-    # ── 6/7. each header has exactly one word ─────────────────────────
+    # ── 6. each header has non-empty content ─────────────────────────
     for idx, header in sections:
         content = header[3:].strip()
-        words = content.split()
-        if len(words) == 0:
-            err(idx + 1, "section header has no word after '##'")
-            return errors
-        elif len(words) > 1:
-            err(
-                idx + 1,
-                f"section header '## {content}' has {len(words)} words; expected 1",
-            )
+        if not content:
+            err(idx + 1, "section header has no text after '##'")
             return errors
 
-    # ── 8. each word is a valid section label ─────────────────────────
+    # ── 7. flag legacy '## ChatGPT' label ────────────────────────────
     for idx, header in sections:
-        word = header[3:].strip()
-        if word == "References":
-            continue  # validated separately
-        if word in KNOWN_LLMS or word == "Prompt":
-            continue
-        # treat as personal name: must be a single capitalised word
-        if not re.match(r"^[A-Z][A-Za-z'\-]*$", word):
-            err(
-                idx + 1,
-                f"'## {word}': section label must be a personal name, "
-                f"'Prompt', 'Claude', or 'GPT'",
-            )
+        if header[3:].strip() == "ChatGPT":
+            err(idx + 1, "'## ChatGPT': use '## GPT' instead")
             return errors
 
     # ── 9. blank line immediately after each ## header ────────────────

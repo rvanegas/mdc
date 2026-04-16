@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import difflib
 import re
 import shutil
 import subprocess
@@ -30,7 +31,7 @@ _OPENAI_PRICING: dict[str, tuple[float, float]] = {
 
 from mdc.assets import build_anthropic_input, build_chat_input, build_response_input, collect_local_assets
 from mdc.config import _default_assistant_name, load_config
-from mdc.form import check_file, fix_title_section, slugify
+from mdc.form import check_file, fix_rtl_spans, fix_title_section, slugify
 from mdc.transcript import (
     TranscriptError,
     append_assistant_reply,
@@ -207,21 +208,46 @@ def run_fix(paths: list[Path]) -> int:
     any_errors = False
     for path in paths:
         raw = path.read_text(encoding="utf-8")
-        new_lines, applied = fix_title_section(raw.split("\n"))
+        rtl_lines, rtl_applied = fix_rtl_spans(raw.split("\n"))
+        new_lines, title_applied = fix_title_section(rtl_lines)
+        applied = rtl_applied + title_applied
+
         if applied:
-            path.with_suffix(".md.bak").write_text(raw, encoding="utf-8")
-            path.write_text("\n".join(new_lines), encoding="utf-8")
+            new_text = "\n".join(new_lines)
+            diff = list(difflib.unified_diff(
+                raw.splitlines(keepends=True),
+                new_text.splitlines(keepends=True),
+                fromfile=f"{path} (original)",
+                tofile=f"{path} (fixed)",
+            ))
+            print(f"{path}:")
+            for fix in applied:
+                print(f"  would fix: {fix}")
+            print()
+            sys.stdout.writelines(diff)
+            print()
+            try:
+                answer = input("Apply changes? [y/N] ").strip().lower()
+            except EOFError:
+                answer = ""
+            if answer == "y":
+                path.with_suffix(".md.bak").write_text(raw, encoding="utf-8")
+                path.write_text(new_text, encoding="utf-8")
+                print("  Applied.")
+            else:
+                print("  Skipped.")
+                print()
+                continue
 
         errs = check_file(path)
 
-        if applied or errs:
-            print(f"{path}:")
-            for fix in applied:
-                print(f"  fixed: {fix}")
+        if not applied and not errs:
+            print(f"{path}: OK")
+        elif errs:
+            if not applied:
+                print(f"{path}:")
             for e in errs:
                 print(f"  error: {e}")
-        else:
-            print(f"{path}: OK")
 
         if errs:
             any_errors = True
@@ -248,8 +274,11 @@ def run_pdf(path: Path, quiet: bool = False) -> int:
         print(f"pandoc error:\n{result.stderr}", file=sys.stderr)
         return result.returncode
 
-    if not quiet and shutil.which("open"):
-        subprocess.run(["open", str(output)])
+    if not quiet:
+        if shutil.which("open"):
+            subprocess.run(["open", str(output)])
+        elif shutil.which("start"):
+            subprocess.run(["start", str(output)], shell=True)
     return 0
 
 
