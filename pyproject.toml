@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mdc"
+version = "0.1.0"
+description = "Unified CLI for mdform-format markdown conversation files."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "anthropic>=0.40.0",
+  "openai>=1.30.0",
+]
+
+[project.scripts]
+mdc = "mdc.cli:main"
+
+[tool.setuptools]
+packages = ["mdc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
