@@ -35,6 +35,8 @@ class AppConfig:
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434/v1"
+    library_path: Path | None = None
+    index_model: str = "ollama/llama3.2"
 
 
 def load_config() -> AppConfig:
@@ -55,12 +57,18 @@ def load_config() -> AppConfig:
     system_prompt_path = Path(str(data.get("system_prompt_file", "")).strip() or DEFAULT_SYSTEM_PROMPT_PATH).expanduser()
     system_prompt = _load_system_prompt(system_prompt_path)
 
+    raw_library = str(data.get("library_path", "")).strip()
+    library_path = Path(raw_library).expanduser().resolve() if raw_library else None
+    index_model = str(data.get("index_model", "")).strip() or "ollama/llama3.2"
+
     return AppConfig(
         model=model,
         system_prompt=system_prompt,
         openai_api_key=openai_api_key,
         anthropic_api_key=anthropic_api_key,
         ollama_base_url=ollama_base_url,
+        library_path=library_path,
+        index_model=index_model,
     )
 
 

@@ -177,6 +177,7 @@ def build_anthropic_input(
     transcript: Transcript,
     system_prompt: str,
     transcript_path: Path,
+    library_manifest: str | None = None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """Build (system_blocks, messages) in Anthropic API format from a transcript."""
     assets_by_turn = collect_local_assets(transcript, transcript_path)
@@ -186,6 +187,8 @@ def build_anthropic_input(
     ]
     if transcript.references:
         system_blocks.append({"type": "text", "text": "Accumulated references:\n" + "\n".join(transcript.references)})
+    if library_manifest:
+        system_blocks.append({"type": "text", "text": library_manifest})
     system_blocks[-1]["cache_control"] = _CACHE_CONTROL
 
     # Anthropic allows at most 4 cache_control blocks per request; 1 is used by the system.

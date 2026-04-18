@@ -8,6 +8,8 @@ import re
 _H = r"#{2}"
 HEADING_RE = re.compile(rf"^({_H})\s+(.+?)\s*$", re.MULTILINE)
 _REFS_HEADING_RE = re.compile(rf"^({_H}) References\s*$", re.MULTILINE)
+_NOTES_HEADING_RE = re.compile(rf"^({_H}) Notes\s*$", re.MULTILINE)
+_RELATED_HEADING_RE = re.compile(rf"^({_H}) Related\s*$", re.MULTILINE)
 _NEXT_HEADING_RE = re.compile(rf"^{_H} ", re.MULTILINE)
 ASSISTANT_NAME = "Claude"  # default for mdform-format transcripts
 REFERENCE_LINE_RE = re.compile(r"^\| .+\([^)]+\)\s+\*?[^*\n]+\*?\s*$")
@@ -52,6 +54,8 @@ class Transcript:
     turns: tuple[Turn, ...]
     pending_turn: Turn | None
     references: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+    related: tuple[str, ...] = ()
 
     @property
     def pending(self) -> bool:
@@ -115,7 +119,10 @@ def parse_transcript(text: str, assistant_name: str = ASSISTANT_NAME) -> Transcr
 
     turns: list[Turn] = []
     references: list[str] = []
+    notes: list[str] = []
+    related: list[str] = []
     last_was_assistant = False
+    seen_references = False
 
     for index, match in enumerate(matches):
         heading = match.group(1)
@@ -128,10 +135,29 @@ def parse_transcript(text: str, assistant_name: str = ASSISTANT_NAME) -> Transcr
         content = text[body_start:body_end]
 
         if speaker == "References":
+            seen_references = True
             for line in content.splitlines():
                 stripped = line.strip()
                 if stripped and REFERENCE_LINE_RE.match(stripped):
                     references.append(_normalize_ref(stripped))
+            continue
+
+        if speaker == "Notes":
+            if seen_references:
+                raise TranscriptError("'## Notes' must come before '## References'.")
+            for line in content.splitlines():
+                stripped = line.strip()
+                if stripped:
+                    notes.append(stripped)
+            continue
+
+        if speaker == "Related":
+            if seen_references:
+                raise TranscriptError("'## Related' must come before '## References'.")
+            for line in content.splitlines():
+                stripped = line.strip()
+                if stripped:
+                    related.append(stripped)
             continue
 
         is_assistant = speaker == assistant_name
@@ -154,6 +180,8 @@ def parse_transcript(text: str, assistant_name: str = ASSISTANT_NAME) -> Transcr
         turns=tuple(turns),
         pending_turn=pending_turn,
         references=tuple(references),
+        notes=tuple(notes),
+        related=tuple(related),
     )
 
 
@@ -164,12 +192,19 @@ def append_assistant_reply(text: str, reply: str, assistant_name: str = ASSISTAN
 
     new_turn = f"{heading} {assistant_name}\n\n{cleaned_reply}"
 
+    notes_match = _NOTES_HEADING_RE.search(text)
+    related_match = _RELATED_HEADING_RE.search(text)
     refs_match = _REFS_HEADING_RE.search(text)
-    if refs_match:
-        before = text[:refs_match.start()].rstrip()
-        refs_section = text[refs_match.start():].rstrip()
+
+    # Insert before whichever special section (Notes, Related, or References) comes first
+    candidates = [m for m in (notes_match, related_match, refs_match) if m is not None]
+    anchor = min(candidates, key=lambda m: m.start()) if candidates else None
+
+    if anchor:
+        before = text[:anchor.start()].rstrip()
+        tail = text[anchor.start():].rstrip()
         separator = "\n\n" if before else ""
-        return f"{before}{separator}{new_turn}\n\n{refs_section}\n"
+        return f"{before}{separator}{new_turn}\n\n{tail}\n"
 
     base = text.rstrip()
     separator = "\n\n" if base else ""

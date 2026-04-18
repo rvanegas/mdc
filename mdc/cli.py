@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # Pricing in USD per million tokens: {model_prefix: (input, output)}.
@@ -31,7 +32,7 @@ _OPENAI_PRICING: dict[str, tuple[float, float]] = {
 
 from mdc.assets import build_anthropic_input, build_chat_input, build_response_input, collect_local_assets
 from mdc.config import _default_assistant_name, load_config
-from mdc.form import check_file, fix_rtl_spans, fix_title_section, slugify
+from mdc.form import check_file, fix_object_replacement, fix_rtl_spans, fix_title_section, slugify
 from mdc.transcript import (
     TranscriptError,
     append_assistant_reply,
@@ -42,17 +43,42 @@ from mdc.transcript import (
 )
 
 
+def _read_file(path: Path) -> str:
+    """Read a file as UTF-8, converting from latin-1 in place if needed."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = path.read_text(encoding="latin-1")
+        path.with_suffix(path.suffix + ".bak").write_bytes(path.read_bytes())
+        path.write_text(text, encoding="utf-8")
+        print(f"Warning: {path.name} was not UTF-8; converted in place (backup: {path.name}.bak).", file=sys.stderr)
+        return text
+
+
+def _require_md(path: Path) -> int:
+    """Return 1 and print an error if path doesn't have a .md suffix, else 0."""
+    if path.suffix.lower() != ".md":
+        print(f"Error: '{path}' does not have a .md extension.")
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
     try:
+        if args.command == "index":
+            return run_index(
+                library_path=args.library_path,
+                model=args.model,
+            )
         if args.command == "new":
             return run_new(args.title)
         if args.command == "check":
             return run_check(Path(args.path))
         if args.command == "validate":
-            return run_validate([Path(p) for p in args.paths])
+            return run_validate([Path(p) for p in args.paths], verbose=args.verbose)
         if args.command == "fix":
             return run_fix([Path(p) for p in args.paths])
         if args.command == "reply":
@@ -62,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
                 reasoning_effort=args.reasoning_effort,
                 text_verbosity=args.text_verbosity,
                 verbose=args.verbose,
+                watch=args.watch,
+                include_index=args.index,
             )
         if args.command == "pdf":
             return run_pdf(Path(args.path), quiet=args.quiet)
@@ -89,6 +117,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command")
 
+    # index
+    index_parser = subparsers.add_parser(
+        "index",
+        help="Build or update the library document index using an AI model for summaries.",
+    )
+    index_parser.add_argument(
+        "library_path",
+        nargs="?",
+        default=None,
+        help="Path to library directory (overrides config file).",
+    )
+    index_parser.add_argument(
+        "-m", "--model",
+        default=None,
+        help="Model to use for summarization (e.g. ollama/llama3.2). Overrides config file.",
+    )
+
     # new
     new_parser = subparsers.add_parser(
         "new",
@@ -107,6 +152,12 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser = subparsers.add_parser(
         "validate",
         help="Run all 12 mdform format rules on one or more files.",
+    )
+    validate_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        default=False,
+        help="Show warnings in addition to errors.",
     )
     validate_parser.add_argument("paths", nargs="+", metavar="file.md")
 
@@ -145,6 +196,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Print progress messages while fetching a reply.",
     )
+    reply_parser.add_argument(
+        "-w", "--watch",
+        action="store_true",
+        default=False,
+        help="Poll the transcript every second and reply whenever a pending turn is found.",
+    )
+    reply_parser.add_argument(
+        "-i", "--index",
+        action="store_true",
+        default=False,
+        help="Include INDEX.md from the configured library path in the context.",
+    )
     reply_parser.add_argument("path", help="Path to the markdown transcript.")
 
     # pdf
@@ -163,6 +226,167 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _index_prompt(content: str, word_count: int) -> str:
+    from mdc.library import summary_target, terms_target
+    s_target = summary_target(word_count)
+    t_target = terms_target(word_count)
+    return (
+        "You are a library indexing assistant. Respond in English only. "
+        "Your only job is to output a SUMMARY and a TERMS list in the exact format "
+        "shown below. Do not add any other text, commentary, greetings, or explanation.\n\n"
+        "OUTPUT FORMAT (use exactly these two lines):\n"
+        "SUMMARY: <summary text here>\n"
+        "TERMS: <term1>; <term2>; <term3>; ...\n\n"
+        "RULES:\n"
+        f"- SUMMARY must be {s_target} describing the document's actual subject matter.\n"
+        f"- TERMS must be {t_target} index terms separated by semicolons: key topics, "
+        "concepts, and names as found in a book index. Write people's names in "
+        "inverted form suitable for sorting (e.g. 'Twain, Mark'). "
+        "Lowercase all terms except proper names and acronyms.\n"
+        "- Output only the two lines. Nothing before SUMMARY, nothing after TERMS.\n"
+        "- If the document is a conversation transcript, index the topics discussed, "
+        "not the fact that it is a conversation and not the conversational style.\n"
+        "- Use singular forms for terms unless the plural is the standard form (e.g. 'belief', not 'beliefs').\n\n"
+        "EXAMPLE OUTPUT:\n"
+        "SUMMARY: A discussion of how satire functions as social criticism, examining "
+        "the use of irony and vernacular voice to expose hypocrisy and moral failure.\n"
+        "TERMS: Twain, Mark; satire; social criticism; irony; vernacular; hypocrisy; "
+        "moral philosophy; American literature\n\n"
+        "---\n"
+        f"{content}"
+    )
+
+
+def _parse_index_reply(text: str) -> tuple[str, list[str]]:
+    summary_lines: list[str] = []
+    terms_lines: list[str] = []
+    mode = ""
+    for line in text.splitlines():
+        if line.startswith("SUMMARY:"):
+            mode = "summary"
+            rest = line[len("SUMMARY:"):].strip()
+            if rest:
+                summary_lines.append(rest)
+        elif line.startswith("TERMS:"):
+            mode = "terms"
+            rest = line[len("TERMS:"):].strip()
+            if rest:
+                terms_lines.append(rest)
+        elif mode == "summary" and line.strip():
+            summary_lines.append(line.strip())
+        elif mode == "terms" and line.strip():
+            terms_lines.append(line.strip())
+    summary = " ".join(summary_lines).strip()
+    raw_terms = " ".join(terms_lines)
+    terms = [t.strip() for t in raw_terms.split(";") if t.strip()]
+    return summary, terms
+
+
+def run_index(library_path: str | None, model: str | None) -> int:
+    from mdc.library import INDEX_FILENAME, build_index
+
+    config = load_config()
+
+    raw_path = library_path or (str(config.library_path) if config.library_path else None)
+    if not raw_path:
+        print("Error: no library path specified. Pass a path or set 'library_path' in config.")
+        return 1
+
+    lib_path = Path(raw_path).expanduser().resolve()
+    if not lib_path.is_dir():
+        print(f"Error: '{lib_path}' is not a directory.")
+        return 1
+
+    effective_model = model or config.index_model
+    total_cost = 0.0
+    last_cost: list[float] = [0.0]
+
+    if effective_model.startswith("claude-"):
+        from mdc.anthropic_client import AnthropicChatClient
+        client = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
+        rates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
+
+        def summarize(content: str, word_count: int) -> tuple[str, list[str]]:
+            nonlocal total_cost
+            system = "You are a library indexing assistant."
+            messages = [{"role": "user", "content": _index_prompt(content, word_count)}]
+            reply = client.generate_reply(system, messages)
+            if rates:
+                in_rate, out_rate = rates
+                cost = (
+                    reply.input_tokens * in_rate / 1_000_000
+                    + reply.output_tokens * out_rate / 1_000_000
+                    + reply.cache_creation_tokens * in_rate * 1.25 / 1_000_000
+                    + reply.cache_read_tokens * in_rate * 0.10 / 1_000_000
+                )
+                total_cost += cost
+                last_cost[0] = cost
+            return _parse_index_reply(reply.text)
+
+    else:
+        from mdc.ollama_client import OllamaChatClient
+        ollama_model = effective_model.removeprefix("ollama/")
+        client = OllamaChatClient(model=ollama_model, base_url=config.ollama_base_url)
+
+        def summarize(content: str, word_count: int) -> tuple[str, list[str]]:
+            messages = [{"role": "user", "content": _index_prompt(content, word_count)}]
+            reply = client.generate_reply(messages)
+            return _parse_index_reply(reply.text)
+
+    counts: dict[str, int] = {}
+    last_status: list[str] = [""]
+
+    def on_progress(rel_path: str, status: str) -> None:
+        counts[status] = counts.get(status, 0) + 1
+        if status == "indexed":
+            if last_status[0] in ("cached", "skipped"):
+                print()
+            cost_str = f"  ${last_cost[0]:.5f}  (total ${total_cost:.2f})" if total_cost else ""
+            print(f"  indexed  {rel_path}{cost_str}")
+        elif status in ("cached", "skipped"):
+            n = counts[status]
+            print(f"\r  {status} {n} files   ", end="", flush=True)
+        last_status[0] = status
+
+    from mdc.library import load_terms
+    old_terms = load_terms(lib_path)
+
+    print(f"Indexing {lib_path} with model '{effective_model}'...")
+    entries, keys_warnings = build_index(lib_path, summarize=summarize, on_progress=on_progress)
+
+    if counts.get("cached") or counts.get("skipped"):
+        print()
+
+    parts = [f"{len(entries)} document(s) indexed"]
+    if counts.get("indexed"):
+        parts.append(f"{counts['indexed']} new/updated")
+    if counts.get("cached"):
+        parts.append(f"{counts['cached']} cached")
+    if counts.get("skipped"):
+        parts.append(f"{counts['skipped']} skipped (too large)")
+    if total_cost:
+        parts.append(f"total cost {_format_cost(total_cost)}")
+    print(f"\n{', '.join(parts)}.")
+    print(f"Written to {lib_path / INDEX_FILENAME}.")
+
+    from mdc.library import load_terms
+    new_terms = load_terms(lib_path)
+    added_terms = sorted(new_terms - old_terms)
+    removed_terms = sorted(old_terms - new_terms)
+    if added_terms or removed_terms:
+        print()
+        for t in added_terms:
+            print(f"  + {t}")
+        for t in removed_terms:
+            print(f"  - {t}")
+
+    if keys_warnings:
+        print("\nKEYS.md warnings:")
+        for w in keys_warnings:
+            print(f"  {w}")
+    return 0
+
+
 def run_new(title: str) -> int:
     today = datetime.date.today().isoformat()
     filename = f"{today}-{slugify(title)}.md"
@@ -176,7 +400,9 @@ def run_new(title: str) -> int:
 
 
 def run_check(path: Path) -> int:
-    transcript = parse_transcript(path.read_text(encoding="utf-8"))
+    if _require_md(path):
+        return 1
+    transcript = parse_transcript(_read_file(path))
     assets_by_turn = collect_local_assets(transcript, path)
     asset_count = sum(len(assets) for assets in assets_by_turn.values())
     if transcript.pending:
@@ -190,15 +416,22 @@ def run_check(path: Path) -> int:
     return 0
 
 
-def run_validate(paths: list[Path]) -> int:
+def run_validate(paths: list[Path], verbose: bool = False) -> int:
     any_errors = False
     for path in paths:
-        errs = check_file(path)
-        if errs:
+        if _require_md(path):
+            any_errors = True
+            continue
+        errs, warns = check_file(path)
+        visible_warns = warns if verbose else []
+        if errs or visible_warns:
             print(f"{path}:")
             for e in errs:
                 print(f"  error: {e}")
-            any_errors = True
+            for w in visible_warns:
+                print(f"  warning: {w}")
+            if errs:
+                any_errors = True
         else:
             print(f"{path}: OK")
     return 1 if any_errors else 0
@@ -207,10 +440,14 @@ def run_validate(paths: list[Path]) -> int:
 def run_fix(paths: list[Path]) -> int:
     any_errors = False
     for path in paths:
-        raw = path.read_text(encoding="utf-8")
-        rtl_lines, rtl_applied = fix_rtl_spans(raw.split("\n"))
+        if _require_md(path):
+            any_errors = True
+            continue
+        raw = _read_file(path)
+        orc_lines, orc_applied = fix_object_replacement(raw.split("\n"))
+        rtl_lines, rtl_applied = fix_rtl_spans(orc_lines)
         new_lines, title_applied = fix_title_section(rtl_lines)
-        applied = rtl_applied + title_applied
+        applied = orc_applied + rtl_applied + title_applied
 
         if applied:
             new_text = "\n".join(new_lines)
@@ -239,15 +476,17 @@ def run_fix(paths: list[Path]) -> int:
                 print()
                 continue
 
-        errs = check_file(path)
+        errs, warns = check_file(path)
 
-        if not applied and not errs:
+        if not applied and not errs and not warns:
             print(f"{path}: OK")
-        elif errs:
+        elif errs or warns:
             if not applied:
                 print(f"{path}:")
             for e in errs:
                 print(f"  error: {e}")
+            for w in warns:
+                print(f"  warning: {w}")
 
         if errs:
             any_errors = True
@@ -259,8 +498,7 @@ def run_pdf(path: Path, quiet: bool = False) -> int:
     if not path.exists():
         print(f"Error: '{path}' does not exist.")
         return 1
-    if path.suffix.lower() != ".md":
-        print(f"Error: '{path}' does not have a .md extension.")
+    if _require_md(path):
         return 1
 
     output = path.with_suffix(".pdf")
@@ -282,19 +520,89 @@ def run_pdf(path: Path, quiet: bool = False) -> int:
     return 0
 
 
+def _run_reply_watch(
+    path: Path,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    text_verbosity: str | None = None,
+) -> int:
+    config = load_config()
+    effective_model = model or config.model
+    if not effective_model:
+        print("Error: no model specified. Pass --model or set 'model' in ~/.config/mdc/config.toml.")
+        return 1
+    assistant_name = _default_assistant_name(effective_model)
+
+    def noop(_msg: str) -> None:
+        pass
+
+    while True:
+        try:
+            text = _read_file(path)
+            transcript = parse_transcript(text, assistant_name=assistant_name)
+        except (TranscriptError, FileNotFoundError, OSError):
+            time.sleep(1)
+            continue
+
+        if not transcript.pending:
+            time.sleep(1)
+            continue
+
+        try:
+            if effective_model.startswith("claude-"):
+                reply_text = _reply_anthropic(transcript, config, path, effective_model,
+                                              reasoning_effort=reasoning_effort,
+                                              verbose=False, status=noop)
+            elif effective_model.startswith("ollama/"):
+                reply_text = _reply_ollama(transcript, config, path, effective_model,
+                                           verbose=False, status=noop)
+            else:
+                reply_text = _reply_openai(transcript, config, path, effective_model,
+                                           reasoning_effort=reasoning_effort,
+                                           text_verbosity=text_verbosity,
+                                           verbose=False, status=noop)
+
+            reply_text = _upgrade_reply_headings(reply_text)
+            if not reply_text.endswith("\n"):
+                sys.stdout.write("\n")
+            sys.stdout.flush()
+
+            body, new_refs = extract_references(reply_text)
+            updated = append_assistant_reply(text, body, assistant_name=assistant_name,
+                                             heading=transcript.pending_turn.heading)
+            existing_refs = list(parse_transcript(updated, assistant_name=assistant_name).references)
+            merged = insert_references(existing_refs, new_refs)
+            if merged != existing_refs:
+                updated = update_references_section(updated, merged)
+            path.write_text(updated, encoding="utf-8")
+            print("OK: reply appended.", flush=True)
+        except Exception as exc:
+            print(f"Error: {exc}", flush=True)
+
+        time.sleep(1)
+
+
 def run_reply(
     path: Path,
     model: str | None = None,
     reasoning_effort: str | None = None,
     text_verbosity: str | None = None,
     verbose: bool = False,
+    watch: bool = False,
+    include_index: bool = False,
 ) -> int:
+    if _require_md(path):
+        return 1
+    if watch:
+        return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort,
+                                text_verbosity=text_verbosity)
+
     def status(msg: str) -> None:
         if verbose:
             print(msg, flush=True)
 
     status(f"Reading transcript from {path}...")
-    text = path.read_text(encoding="utf-8")
+    text = _read_file(path)
     config = load_config()
     effective_model = model or config.model
     if not effective_model:
@@ -314,12 +622,14 @@ def run_reply(
             reasoning_effort=reasoning_effort,
             verbose=verbose,
             status=status,
+            include_index=include_index,
         )
     elif effective_model.startswith("ollama/"):
         reply_text = _reply_ollama(
             transcript, config, path, effective_model,
             verbose=verbose,
             status=status,
+            include_index=include_index,
         )
     else:
         reply_text = _reply_openai(
@@ -328,6 +638,7 @@ def run_reply(
             text_verbosity=text_verbosity,
             verbose=verbose,
             status=status,
+            include_index=include_index,
         )
 
     reply_text = _upgrade_reply_headings(reply_text)
@@ -348,6 +659,15 @@ def run_reply(
     return 0
 
 
+def _load_index_md(config) -> str | None:
+    from mdc.library import INDEX_FILENAME
+    if config.library_path and config.library_path.is_dir():
+        index_path = config.library_path / INDEX_FILENAME
+        if index_path.exists():
+            return index_path.read_text(encoding="utf-8")
+    return None
+
+
 def _reply_anthropic(
     transcript,
     config,
@@ -356,14 +676,47 @@ def _reply_anthropic(
     reasoning_effort: str | None,
     verbose: bool,
     status,
+    include_index: bool = False,
 ) -> str:
     from mdc.anthropic_client import AnthropicChatClient
+    from mdc.library import LIBRARY_TOOLS, load_entries, read_document, render_manifest, search_library
+
+    tools = None
+    tool_executor = None
+    library_manifest = None
+
+    if include_index:
+        library_manifest = _load_index_md(config)
+        if library_manifest:
+            status("Including INDEX.md in context.")
+    elif config.library_path and config.library_path.is_dir():
+        entries = load_entries(config.library_path)
+        if entries:
+                library_manifest = render_manifest(entries)
+                tools = LIBRARY_TOOLS
+                lib = config.library_path
+
+                def tool_executor(tool_name: str, tool_input: dict[str, object]) -> str:
+                    if tool_name == "read_document":
+                        return read_document(lib, str(tool_input.get("path", "")))
+                    if tool_name == "search_library":
+                        results = search_library(entries, str(tool_input.get("query", "")))
+                        return render_manifest(results) if results else "No matching documents found."
+                    return f"Unknown tool: {tool_name}"
+
+                status(f"Library: {len(entries)} document(s) available.")
 
     client = AnthropicChatClient(model=model, api_key=config.anthropic_api_key)
-    system, messages = build_anthropic_input(transcript, config.system_prompt, path)
+    system, messages = build_anthropic_input(transcript, config.system_prompt, path, library_manifest=library_manifest)
     status(f"Requesting reply from Anthropic model '{model}'...")
     status("Streaming reply:")
-    reply = client.generate_reply(system, messages, on_delta=_print_reply_delta, reasoning_effort=reasoning_effort)
+    reply = client.generate_reply(
+        system, messages,
+        on_delta=_print_reply_delta,
+        reasoning_effort=reasoning_effort,
+        tools=tools,
+        tool_executor=tool_executor,
+    )
     if verbose:
         _print_anthropic_usage(model, reply)
     return reply.text
@@ -376,12 +729,19 @@ def _reply_ollama(
     model: str,
     verbose: bool,
     status,
+    include_index: bool = False,
 ) -> str:
     from mdc.ollama_client import OllamaChatClient
 
     ollama_model = model.removeprefix("ollama/")
     client = OllamaChatClient(model=ollama_model, base_url=config.ollama_base_url)
-    messages = build_chat_input(transcript, config.system_prompt, path)
+    system_prompt = config.system_prompt
+    if include_index:
+        index_text = _load_index_md(config)
+        if index_text:
+            system_prompt = system_prompt + "\n\n" + index_text
+            status("Including INDEX.md in context.")
+    messages = build_chat_input(transcript, system_prompt, path)
     status(f"Requesting reply from Ollama model '{ollama_model}' at {config.ollama_base_url}...")
     status("Streaming reply:")
     reply = client.generate_reply(messages, on_delta=_print_reply_delta)
@@ -397,6 +757,7 @@ def _reply_openai(
     text_verbosity: str | None,
     verbose: bool,
     status,
+    include_index: bool = False,
 ) -> str:
     from mdc.openai_client import OpenAIChatClient
 
@@ -406,6 +767,12 @@ def _reply_openai(
         reasoning_effort=reasoning_effort,
         text_verbosity=text_verbosity,
     )
+    system_prompt = config.system_prompt
+    if include_index:
+        index_text = _load_index_md(config)
+        if index_text:
+            system_prompt = system_prompt + "\n\n" + index_text
+            status("Including INDEX.md in context.")
     status(f"Requesting reply from OpenAI model '{model}'...")
     cache_hit_assets: dict[Path, object] = {}
 
@@ -428,7 +795,7 @@ def _reply_openai(
 
         messages = build_response_input(
             transcript,
-            config.system_prompt,
+            system_prompt,
             path,
             resolve_file_id=resolve_asset_file_id,
         )
