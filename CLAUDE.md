@@ -33,7 +33,7 @@ The tool has two main pipelines: **CLI → Transcript parsing → Format validat
 - **`form.py`** — Enforces the 12-rule mdform format (blank lines, headers, speaker labels, reference formatting, filename derivation)
 - **`assets.py`** — Collects local file references from markdown links, validates paths stay within the transcript directory, builds API-specific inputs with caching directives
 - **`config.py`** — Loads `~/.config/mdc/config.toml`; also reads `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env vars
-- **`library.py`** — Library indexing: scans a directory of markdown documents, generates AI summaries and index terms, writes `INDEX.md` and `TERMS.md`, reads `KEYS.md` for term canonicalization
+- **`library.py`** — Library indexing: scans a directory of markdown documents, generates AI summaries and index terms, writes `MANIFEST.md` and `INDEX.md`, reads `KEYS.md` for term canonicalization
 - **`anthropic_client.py`**, **`openai_client.py`**, **`ollama_client.py`** — Per-provider streaming clients
 
 ### Data flow for `mdc reply`
@@ -88,8 +88,8 @@ Bump `version` in `pyproject.toml` before each build. The wheel filename reflect
 ## Library Index
 
 `mdc index [library_path]` scans a directory of markdown documents, calls an AI model to generate summaries and index terms per document, and writes:
-- **`INDEX.md`** — human-readable index with title, word count, terms, and summary per document
-- **`TERMS.md`** — sorted flat list of all canonical terms for use as `reply` context (`-i` flag)
+- **`MANIFEST.md`** — human-readable document listing with title, word count, terms, and summary per document
+- **`INDEX.md`** — inverted term index for use as `reply` context (`-i` flag)
 
 State is cached in `~/.local/state/mdc/library-index.json` and `library-terms.json`; only changed documents are re-indexed.
 
@@ -100,7 +100,7 @@ An optional `KEYS.md` in the library directory controls term canonicalization wi
 - **`## Plural`** — each line is a canonical term; its plural (`term + "s"`) is auto-aliased to it
 - **`## Alias`** — groups of aliases mapping to a canonical: the canonical is a bare line, aliases are `- alias` bullets beneath it
 - **`## Exclude`** — terms to suppress from the index entirely
-- **`## Group`** — hierarchical grouping: a parent term followed by `- subterm` bullets; subterms appear nested under the parent in `TERMS.md`
+- **`## Group`** — hierarchical grouping: a parent term followed by `- subterm` bullets; subterms appear nested under the parent in `INDEX.md`
 
 ## Configuration
 

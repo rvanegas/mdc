@@ -8,11 +8,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+MANIFEST_FILENAME = "MANIFEST.md"
 INDEX_FILENAME = "INDEX.md"
-TERMS_FILENAME = "TERMS.md"
 KEYS_FILENAME = "KEYS.md"
-_STATE_PATH = Path("~/.local/state/mdc/library-index.json").expanduser()
-_TERMS_STATE_PATH = Path("~/.local/state/mdc/library-terms.json").expanduser()
+_STATE_PATH = Path("~/.local/state/mdc/library-manifest.json").expanduser()
+_TERMS_STATE_PATH = Path("~/.local/state/mdc/library-index.json").expanduser()
 
 
 @dataclass(frozen=True)
@@ -71,7 +71,7 @@ def _normalize_initials(term: str) -> str:
     return re.sub(r'(?<=[A-Z])\.(?=[A-Z])', '. ', term)
 
 
-def write_index_md(library_path: Path, entries: list[DocEntry], timestamp: datetime.datetime) -> None:
+def write_manifest(library_path: Path, entries: list[DocEntry], timestamp: datetime.datetime) -> None:
     lines = [
         "",
         "# Index",
@@ -91,7 +91,7 @@ def write_index_md(library_path: Path, entries: list[DocEntry], timestamp: datet
             lines.append("  " + _md_escape(e.summary))
         lines.append("")
         lines.append("---")
-    (library_path / INDEX_FILENAME).write_text("\n".join(lines), encoding="utf-8")
+    (library_path / MANIFEST_FILENAME).write_text("\n".join(lines), encoding="utf-8")
 
 
 def parse_keys_md(library_path: Path) -> tuple[dict[str, str], set[str], set[str], dict[str, list[str]]]:
@@ -136,7 +136,7 @@ def parse_keys_md(library_path: Path) -> tuple[dict[str, str], set[str], set[str
     return alias_map, canonicals, exclusions, groups
 
 
-def write_terms_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
+def write_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
     """Write an inverted term→files index as JSON and a markdown mirror.
 
     Returns a list of warning strings for irrelevant KEYS.md entries.
@@ -200,13 +200,13 @@ def write_terms_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
     _TERMS_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "library_path": str(library_path),
-        "groups": {p: subs for p, subs in sorted(resolved_groups.items())},
-        "terms": {t: files for t, files in sorted(inverted.items())},
+        "groups": {p: subs for p, subs in sorted(resolved_groups.items(), key=lambda x: x[0].casefold())},
+        "terms": {t: files for t, files in sorted(inverted.items(), key=lambda x: x[0].casefold())},
     }
     _TERMS_STATE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     # Markdown mirror
-    top_level = [t for t in sorted(inverted) if t not in grouped_subterms]
+    top_level = [t for t in sorted(inverted, key=str.casefold) if t not in grouped_subterms]
     total = len(inverted)
     lines = ["", "# Terms", "", f"{total} term(s).", ""]
     for term in top_level:
@@ -216,7 +216,7 @@ def write_terms_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
         subterms = resolved_groups.get(term, [])
         if subterms:
             lines.append("")
-        for subterm in sorted(subterms):
+        for subterm in sorted(subterms, key=str.casefold):
             if subterm not in inverted:
                 continue
             lines.append(f"  {_md_escape(subterm)}")
@@ -226,7 +226,7 @@ def write_terms_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
         if not subterms:
             lines.append("")
         lines.append("---")
-    (library_path / TERMS_FILENAME).write_text("\n".join(lines), encoding="utf-8")
+    (library_path / INDEX_FILENAME).write_text("\n".join(lines), encoding="utf-8")
 
     # Report irrelevant KEYS.md entries.
     warnings: list[str] = []
@@ -326,7 +326,7 @@ def build_index(
     summarize: Callable[[str, int], tuple[str, list[str]]] | None = None,
     on_progress: Callable[[str, str], None] | None = None,
 ) -> tuple[list[DocEntry], list[str]]:
-    """Build or update INDEX.md for library_path.
+    """Build or update MANIFEST.md and INDEX.md for library_path.
 
     summarize(content, word_count) -> (summary, terms)
     on_progress(rel_path, status) where status is 'cached' or 'indexed'
@@ -336,7 +336,7 @@ def build_index(
     result: list[DocEntry] = []
 
     for md_path in sorted(library_path.rglob("*.md")):
-        if md_path.name in (INDEX_FILENAME, TERMS_FILENAME, KEYS_FILENAME):
+        if md_path.name in (MANIFEST_FILENAME, INDEX_FILENAME, KEYS_FILENAME):
             continue
         rel_path = str(md_path.relative_to(library_path))
 
@@ -370,15 +370,15 @@ def build_index(
         if entry.summary and entry.terms:
             entries_by_path[rel_path] = entry
             _save_state(library_path, entries_by_path)
-        write_index_md(library_path, result, datetime.datetime.now())
+        write_manifest(library_path, result, datetime.datetime.now())
         if on_progress:
             on_progress(rel_path, "indexed")
 
     # Remove entries for files that no longer exist.
     final_by_path = {e.rel_path: e for e in result}
     _save_state(library_path, final_by_path)
-    write_index_md(library_path, result, datetime.datetime.now())
-    warnings = write_terms_index(library_path, result)
+    write_manifest(library_path, result, datetime.datetime.now())
+    warnings = write_index(library_path, result)
     return result, warnings
 
 

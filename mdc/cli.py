@@ -89,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
                 text_verbosity=args.text_verbosity,
                 verbose=args.verbose,
                 watch=args.watch,
-                include_index=args.index,
+                include_manifest=args.manifest,
             )
         if args.command == "pdf":
             return run_pdf(Path(args.path), quiet=args.quiet)
@@ -203,10 +203,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Poll the transcript every second and reply whenever a pending turn is found.",
     )
     reply_parser.add_argument(
-        "-i", "--index",
+        "-i", "--manifest",
         action="store_true",
         default=False,
-        help="Include INDEX.md from the configured library path in the context.",
+        help="Include MANIFEST.md from the configured library path in the context.",
     )
     reply_parser.add_argument("path", help="Path to the markdown transcript.")
 
@@ -283,7 +283,7 @@ def _parse_index_reply(text: str) -> tuple[str, list[str]]:
 
 
 def run_index(library_path: str | None, model: str | None) -> int:
-    from mdc.library import INDEX_FILENAME, build_index
+    from mdc.library import MANIFEST_FILENAME, build_index
 
     config = load_config()
 
@@ -367,7 +367,7 @@ def run_index(library_path: str | None, model: str | None) -> int:
     if total_cost:
         parts.append(f"total cost {_format_cost(total_cost)}")
     print(f"\n{', '.join(parts)}.")
-    print(f"Written to {lib_path / INDEX_FILENAME}.")
+    print(f"Written to {lib_path / MANIFEST_FILENAME}.")
 
     from mdc.library import load_terms
     new_terms = load_terms(lib_path)
@@ -589,7 +589,7 @@ def run_reply(
     text_verbosity: str | None = None,
     verbose: bool = False,
     watch: bool = False,
-    include_index: bool = False,
+    include_manifest: bool = False,
 ) -> int:
     if _require_md(path):
         return 1
@@ -622,14 +622,14 @@ def run_reply(
             reasoning_effort=reasoning_effort,
             verbose=verbose,
             status=status,
-            include_index=include_index,
+            include_manifest=include_manifest,
         )
     elif effective_model.startswith("ollama/"):
         reply_text = _reply_ollama(
             transcript, config, path, effective_model,
             verbose=verbose,
             status=status,
-            include_index=include_index,
+            include_manifest=include_manifest,
         )
     else:
         reply_text = _reply_openai(
@@ -638,7 +638,7 @@ def run_reply(
             text_verbosity=text_verbosity,
             verbose=verbose,
             status=status,
-            include_index=include_index,
+            include_manifest=include_manifest,
         )
 
     reply_text = _upgrade_reply_headings(reply_text)
@@ -659,12 +659,12 @@ def run_reply(
     return 0
 
 
-def _load_index_md(config) -> str | None:
-    from mdc.library import INDEX_FILENAME
+def _load_manifest_md(config) -> str | None:
+    from mdc.library import MANIFEST_FILENAME
     if config.library_path and config.library_path.is_dir():
-        index_path = config.library_path / INDEX_FILENAME
-        if index_path.exists():
-            return index_path.read_text(encoding="utf-8")
+        manifest_path = config.library_path / MANIFEST_FILENAME
+        if manifest_path.exists():
+            return manifest_path.read_text(encoding="utf-8")
     return None
 
 
@@ -676,7 +676,7 @@ def _reply_anthropic(
     reasoning_effort: str | None,
     verbose: bool,
     status,
-    include_index: bool = False,
+    include_manifest: bool = False,
 ) -> str:
     from mdc.anthropic_client import AnthropicChatClient
     from mdc.library import LIBRARY_TOOLS, load_entries, read_document, render_manifest, search_library
@@ -685,10 +685,10 @@ def _reply_anthropic(
     tool_executor = None
     library_manifest = None
 
-    if include_index:
-        library_manifest = _load_index_md(config)
+    if include_manifest:
+        library_manifest = _load_manifest_md(config)
         if library_manifest:
-            status("Including INDEX.md in context.")
+            status("Including MANIFEST.md in context.")
     elif config.library_path and config.library_path.is_dir():
         entries = load_entries(config.library_path)
         if entries:
@@ -729,18 +729,18 @@ def _reply_ollama(
     model: str,
     verbose: bool,
     status,
-    include_index: bool = False,
+    include_manifest: bool = False,
 ) -> str:
     from mdc.ollama_client import OllamaChatClient
 
     ollama_model = model.removeprefix("ollama/")
     client = OllamaChatClient(model=ollama_model, base_url=config.ollama_base_url)
     system_prompt = config.system_prompt
-    if include_index:
-        index_text = _load_index_md(config)
-        if index_text:
-            system_prompt = system_prompt + "\n\n" + index_text
-            status("Including INDEX.md in context.")
+    if include_manifest:
+        manifest_text = _load_manifest_md(config)
+        if manifest_text:
+            system_prompt = system_prompt + "\n\n" + manifest_text
+            status("Including MANIFEST.md in context.")
     messages = build_chat_input(transcript, system_prompt, path)
     status(f"Requesting reply from Ollama model '{ollama_model}' at {config.ollama_base_url}...")
     status("Streaming reply:")
@@ -757,7 +757,7 @@ def _reply_openai(
     text_verbosity: str | None,
     verbose: bool,
     status,
-    include_index: bool = False,
+    include_manifest: bool = False,
 ) -> str:
     from mdc.openai_client import OpenAIChatClient
 
@@ -768,11 +768,11 @@ def _reply_openai(
         text_verbosity=text_verbosity,
     )
     system_prompt = config.system_prompt
-    if include_index:
-        index_text = _load_index_md(config)
-        if index_text:
-            system_prompt = system_prompt + "\n\n" + index_text
-            status("Including INDEX.md in context.")
+    if include_manifest:
+        manifest_text = _load_manifest_md(config)
+        if manifest_text:
+            system_prompt = system_prompt + "\n\n" + manifest_text
+            status("Including MANIFEST.md in context.")
     status(f"Requesting reply from OpenAI model '{model}'...")
     cache_hit_assets: dict[Path, object] = {}
 
