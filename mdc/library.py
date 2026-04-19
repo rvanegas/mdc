@@ -113,7 +113,10 @@ def parse_keys_md(library_path: Path) -> tuple[dict[str, str], set[str], set[str
             section = stripped[3:].strip().lower()
             current = ""
             continue
-        if section == "unify":
+        if section == "plural":
+            canonicals.add(stripped)
+            alias_map[stripped + "s"] = stripped
+        elif section == "alias":
             if stripped.startswith("- "):
                 alias = stripped[2:].strip()
                 if current and alias:
@@ -140,13 +143,13 @@ def write_terms_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
     """
     alias_map, canonicals, exclusions, groups = parse_keys_md(library_path)
 
-    # Validate: subterms in Group must not be non-canonical aliases in Unify.
+    # Validate: subterms in Group must not be non-canonical aliases in Alias.
     for parent, subterms in groups.items():
         for subterm in subterms:
             if subterm in alias_map:
                 raise ValueError(
                     f"KEYS.md: '{subterm}' is a subentry under '{parent}' in ## Group "
-                    f"but is also a non-canonical alias for '{alias_map[subterm]}' in ## Unify."
+                    f"but is also a non-canonical alias for '{alias_map[subterm]}' in ## Alias."
                 )
 
     # Map every lowercase form that should route to a canonical.
@@ -164,7 +167,7 @@ def write_terms_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
         if len(matches) == 1 and surname_lower not in canonical_for:
             canonical_for[surname_lower] = matches[0]
 
-    # Resolve group parents and subterms through Unify canonicals.
+    # Resolve group parents and subterms through Alias canonicals.
     resolved_groups: dict[str, list[str]] = {}
     for parent, subterms in groups.items():
         rparent = canonical_for.get(parent.lower(), parent)
@@ -229,7 +232,7 @@ def write_terms_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
     warnings: list[str] = []
     for alias in alias_map:
         if _normalize_initials(alias).lower() not in raw_terms:
-            warnings.append(f"KEYS.md ## Unify: alias '{alias}' not found in any document")
+            warnings.append(f"KEYS.md ## Alias: alias '{alias}' not found in any document")
     for excl in exclusions:
         if excl.lower() not in raw_terms:
             warnings.append(f"KEYS.md ## Exclude: '{excl}' not found in any document")
