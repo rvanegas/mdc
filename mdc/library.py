@@ -95,15 +95,14 @@ def write_manifest(library_path: Path, entries: list[DocEntry], timestamp: datet
     (library_path / MANIFEST_FILENAME).write_text("\n".join(lines), encoding="utf-8")
 
 
-def parse_keys_md(library_path: Path) -> tuple[dict[str, str], set[str], set[str], dict[str, list[str]]]:
-    """Return ({alias: canonical}, canonicals, exclusions, {parent: [subterms]}) from KEYS.md."""
+def parse_keys_md(library_path: Path) -> tuple[dict[str, str], set[str], set[str]]:
+    """Return ({alias: canonical}, canonicals, exclusions) from KEYS.md."""
     keys_path = library_path / KEYS_FILENAME
     if not keys_path.exists():
-        return {}, set(), set(), {}
+        return {}, set(), set()
     alias_map: dict[str, str] = {}
     canonicals: set[str] = set()
     exclusions: set[str] = set()
-    groups: dict[str, list[str]] = {}
     section = ""
     current = ""
     for line in keys_path.read_text(encoding="utf-8").splitlines():
@@ -127,14 +126,7 @@ def parse_keys_md(library_path: Path) -> tuple[dict[str, str], set[str], set[str
                 canonicals.add(current)
         elif section == "exclude":
             exclusions.add(stripped)
-        elif section == "group":
-            if stripped.startswith("- "):
-                subterm = stripped[2:].strip()
-                if current and subterm:
-                    groups.setdefault(current, []).append(subterm)
-            else:
-                current = stripped
-    return alias_map, canonicals, exclusions, groups
+    return alias_map, canonicals, exclusions
 
 
 def write_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
@@ -142,16 +134,7 @@ def write_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
 
     Returns a list of warning strings for irrelevant KEYS.md entries.
     """
-    alias_map, canonicals, exclusions, groups = parse_keys_md(library_path)
-
-    # Validate: subterms in Group must not be non-canonical aliases in Alias.
-    for parent, subterms in groups.items():
-        for subterm in subterms:
-            if subterm in alias_map:
-                raise ValueError(
-                    f"KEYS.md: '{subterm}' is a subentry under '{parent}' in ## Group "
-                    f"but is also a non-canonical alias for '{alias_map[subterm]}' in ## Alias."
-                )
+    alias_map, canonicals, exclusions = parse_keys_md(library_path)
 
     # Map every lowercase form that should route to a canonical.
     canonical_for: dict[str, str] = {c.lower(): c for c in canonicals}
@@ -167,15 +150,6 @@ def write_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
     for surname_lower, matches in surname_to_canonical.items():
         if len(matches) == 1 and surname_lower not in canonical_for:
             canonical_for[surname_lower] = matches[0]
-
-    # Resolve group parents and subterms through Alias canonicals.
-    resolved_groups: dict[str, list[str]] = {}
-    for parent, subterms in groups.items():
-        rparent = canonical_for.get(parent.lower(), parent)
-        resolved_groups[rparent] = [canonical_for.get(s.lower(), s) for s in subterms]
-
-    # Subterms that appear under a group parent are suppressed from top-level.
-    grouped_subterms: set[str] = {s for subs in resolved_groups.values() for s in subs}
 
     exclusions_lower = {e.lower() for e in exclusions}
 
@@ -201,38 +175,22 @@ def write_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
     _TERMS_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "library_path": str(library_path),
-        "groups": {p: subs for p, subs in sorted(resolved_groups.items(), key=lambda x: x[0].casefold())},
         "terms": {t: files for t, files in sorted(inverted.items(), key=lambda x: x[0].casefold())},
     }
     _TERMS_STATE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     # Markdown mirror
     relations = load_relations(library_path)
-    top_level = [t for t in sorted(inverted, key=str.casefold) if t not in grouped_subterms]
     total = len(inverted)
     lines = ["", "# Terms", "", f"{total} term(s).", ""]
-    for term in top_level:
+    for term in sorted(inverted, key=str.casefold):
         lines.append(_md_escape(term))
         for f in sorted(inverted[term], key=lambda x: x["rel_path"]):
             lines.append(f"  {_md_escape(f['rel_path'])} — {_md_escape(f['title'])}")
         related = relations.get(term, [])
         if related:
             lines.append("  Related: " + "; ".join(_md_escape(r) for r in sorted(related, key=str.casefold)))
-        subterms = resolved_groups.get(term, [])
-        if subterms:
-            lines.append("")
-        for subterm in sorted(subterms, key=str.casefold):
-            if subterm not in inverted:
-                continue
-            lines.append(f"  {_md_escape(subterm)}")
-            for f in sorted(inverted[subterm], key=lambda x: x["rel_path"]):
-                lines.append(f"    {_md_escape(f['rel_path'])} — {_md_escape(f['title'])}")
-            sub_related = relations.get(subterm, [])
-            if sub_related:
-                lines.append("    Related: " + "; ".join(_md_escape(r) for r in sorted(sub_related, key=str.casefold)))
-            lines.append("")
-        if not subterms:
-            lines.append("")
+        lines.append("")
         lines.append("---")
     (library_path / INDEX_FILENAME).write_text("\n".join(lines), encoding="utf-8")
 
@@ -244,10 +202,6 @@ def write_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
     for excl in exclusions:
         if excl.lower() not in raw_terms:
             warnings.append(f"KEYS.md ## Exclude: '{excl}' not found in any document")
-    for subterms in resolved_groups.values():
-        for subterm in subterms:
-            if subterm not in inverted:
-                warnings.append(f"KEYS.md ## Group: subterm '{subterm}' not found in index")
     return warnings
 
 
@@ -472,7 +426,7 @@ def lookup_term(library_path: Path, term: str, exclude: str | None = None) -> st
     if data.get("library_path") != str(library_path):
         return f"Term not found: '{term}'"
     term_map = data.get("terms", {})
-    alias_map, _, _, _ = parse_keys_md(library_path)
+    alias_map, _, _ = parse_keys_md(library_path)
     resolved = alias_map.get(term) or alias_map.get(term.casefold())
     if resolved is not None:
         term = resolved
