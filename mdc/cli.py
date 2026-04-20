@@ -88,14 +88,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "fix":
             return run_fix([Path(p) for p in args.paths])
         if args.command == "reply":
+            if args.terms and not args.library:
+                print("Error: -t/--term requires -l/--library.")
+                return 1
             return run_reply(
                 Path(args.path),
                 model=args.model,
                 reasoning_effort=args.reasoning_effort,
-                text_verbosity=args.text_verbosity,
                 verbose=args.verbose,
                 watch=args.watch,
-                include_manifest=args.manifest,
+                library=args.library,
+                terms=args.terms,
             )
         if args.command == "pdf":
             return run_pdf(Path(args.path), quiet=args.quiet)
@@ -214,12 +217,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Set the model's reasoning effort (default: low).",
     )
     reply_parser.add_argument(
-        "-t", "--text-verbosity",
-        choices=("low", "medium", "high"),
-        default="medium",
-        help="Set the model's output verbosity (default: medium).",
-    )
-    reply_parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         default=False,
@@ -232,10 +229,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Poll the transcript every second and reply whenever a pending turn is found.",
     )
     reply_parser.add_argument(
-        "-i", "--manifest",
+        "-l", "--library",
         action="store_true",
         default=False,
-        help="Include MANIFEST.md from the configured library path in the context.",
+        help="Enable library tool access (requires library_path in config).",
+    )
+    reply_parser.add_argument(
+        "-t", "--term",
+        action="append",
+        dest="terms",
+        default=[],
+        metavar="TERM",
+        help="Pre-look up a library index term and inject results into context. Requires -l. May be repeated.",
     )
     reply_parser.add_argument("path", help="Path to the markdown transcript.")
 
@@ -731,7 +736,6 @@ def _run_reply_watch(
     path: Path,
     model: str | None = None,
     reasoning_effort: str | None = None,
-    text_verbosity: str | None = None,
 ) -> int:
     config = load_config()
     effective_model = model or config.model
@@ -766,7 +770,6 @@ def _run_reply_watch(
             else:
                 reply_text = _reply_openai(transcript, config, path, effective_model,
                                            reasoning_effort=reasoning_effort,
-                                           text_verbosity=text_verbosity,
                                            verbose=False, status=noop)
 
             reply_text = _upgrade_reply_headings(reply_text)
@@ -793,16 +796,15 @@ def run_reply(
     path: Path,
     model: str | None = None,
     reasoning_effort: str | None = None,
-    text_verbosity: str | None = None,
     verbose: bool = False,
     watch: bool = False,
-    include_manifest: bool = False,
+    library: bool = False,
+    terms: list[str] | None = None,
 ) -> int:
     if _require_md(path):
         return 1
     if watch:
-        return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort,
-                                text_verbosity=text_verbosity)
+        return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort)
 
     def status(msg: str) -> None:
         if verbose:
@@ -829,23 +831,21 @@ def run_reply(
             reasoning_effort=reasoning_effort,
             verbose=verbose,
             status=status,
-            include_manifest=include_manifest,
+            library=library,
+            terms=terms or [],
         )
     elif effective_model.startswith("ollama/"):
         reply_text = _reply_ollama(
             transcript, config, path, effective_model,
             verbose=verbose,
             status=status,
-            include_manifest=include_manifest,
         )
     else:
         reply_text = _reply_openai(
             transcript, config, path, effective_model,
             reasoning_effort=reasoning_effort,
-            text_verbosity=text_verbosity,
             verbose=verbose,
             status=status,
-            include_manifest=include_manifest,
         )
 
     reply_text = _upgrade_reply_headings(reply_text)
@@ -866,14 +866,6 @@ def run_reply(
     return 0
 
 
-def _load_manifest_md(config) -> str | None:
-    from mdc.library import MANIFEST_FILENAME
-    if config.library_path and config.library_path.is_dir():
-        manifest_path = config.library_path / MANIFEST_FILENAME
-        if manifest_path.exists():
-            return manifest_path.read_text(encoding="utf-8")
-    return None
-
 
 def _reply_anthropic(
     transcript,
@@ -883,38 +875,59 @@ def _reply_anthropic(
     reasoning_effort: str | None,
     verbose: bool,
     status,
-    include_manifest: bool = False,
+    library: bool = False,
+    terms: list[str] | None = None,
 ) -> str:
     from mdc.anthropic_client import AnthropicChatClient
-    from mdc.library import LIBRARY_TOOLS, load_entries, read_document, render_manifest, search_library
+    from mdc.library import LIBRARY_TOOLS, get_summary, lookup_term, read_document
 
     tools = None
     tool_executor = None
-    library_manifest = None
+    library_context = None
 
-    if include_manifest:
-        library_manifest = _load_manifest_md(config)
-        if library_manifest:
-            status("Including MANIFEST.md in context.")
-    elif config.library_path and config.library_path.is_dir():
-        entries = load_entries(config.library_path)
-        if entries:
-                library_manifest = render_manifest(entries)
-                tools = LIBRARY_TOOLS
-                lib = config.library_path
+    if library:
+        if not config.library_path or not config.library_path.is_dir():
+            raise ValueError("--library requires library_path to be set in config.")
+        lib = config.library_path
+        tools = LIBRARY_TOOLS
 
-                def tool_executor(tool_name: str, tool_input: dict[str, object]) -> str:
-                    if tool_name == "read_document":
-                        return read_document(lib, str(tool_input.get("path", "")))
-                    if tool_name == "search_library":
-                        results = search_library(entries, str(tool_input.get("query", "")))
-                        return render_manifest(results) if results else "No matching documents found."
-                    return f"Unknown tool: {tool_name}"
+        preloaded: list[str] = []
+        for term in (terms or []):
+            result = lookup_term(lib, term)
+            if result.startswith("Term not found"):
+                status(f"! library term not found: \"{term}\"")
+            else:
+                preloaded.append(result)
 
-                status(f"Library: {len(entries)} document(s) available.")
+        library_tools_prompt = (
+            "You have access to a library of documents. To find relevant material:\n"
+            "1. Call lookup_term with a relevant index term. It returns matching documents and related terms.\n"
+            "2. Call get_summary for documents that look relevant.\n"
+            "3. Call read_document only when a summary confirms it is worth reading in full.\n"
+            "Start by looking up index terms relevant to the user's question."
+        )
+        if preloaded:
+            library_context = library_tools_prompt + "\n\nPre-looked-up library terms:\n\n" + "\n\n".join(preloaded)
+        else:
+            library_context = library_tools_prompt
+
+        def tool_executor(tool_name: str, tool_input: dict[str, object]) -> str:
+            if tool_name == "lookup_term":
+                term = str(tool_input.get("term", ""))
+                result = lookup_term(lib, term)
+                if result.startswith("Term not found"):
+                    status(f"! library term not found: \"{term}\"")
+                return result
+            if tool_name == "get_summary":
+                return get_summary(lib, str(tool_input.get("path", "")))
+            if tool_name == "read_document":
+                return read_document(lib, str(tool_input.get("path", "")))
+            return f"Unknown tool: {tool_name}"
+
+        status("Library tools active.")
 
     client = AnthropicChatClient(model=model, api_key=config.anthropic_api_key)
-    system, messages = build_anthropic_input(transcript, config.system_prompt, path, library_manifest=library_manifest)
+    system, messages = build_anthropic_input(transcript, config.system_prompt, path, library_context=library_context)
     status(f"Requesting reply from Anthropic model '{model}'...")
     status("Streaming reply:")
     reply = client.generate_reply(
@@ -936,19 +949,12 @@ def _reply_ollama(
     model: str,
     verbose: bool,
     status,
-    include_manifest: bool = False,
 ) -> str:
     from mdc.ollama_client import OllamaChatClient
 
     ollama_model = model.removeprefix("ollama/")
     client = OllamaChatClient(model=ollama_model, base_url=config.ollama_base_url)
-    system_prompt = config.system_prompt
-    if include_manifest:
-        manifest_text = _load_manifest_md(config)
-        if manifest_text:
-            system_prompt = system_prompt + "\n\n" + manifest_text
-            status("Including MANIFEST.md in context.")
-    messages = build_chat_input(transcript, system_prompt, path)
+    messages = build_chat_input(transcript, config.system_prompt, path)
     status(f"Requesting reply from Ollama model '{ollama_model}' at {config.ollama_base_url}...")
     status("Streaming reply:")
     reply = client.generate_reply(messages, on_delta=_print_reply_delta)
@@ -961,10 +967,8 @@ def _reply_openai(
     path: Path,
     model: str,
     reasoning_effort: str | None,
-    text_verbosity: str | None,
     verbose: bool,
     status,
-    include_manifest: bool = False,
 ) -> str:
     from mdc.openai_client import OpenAIChatClient
 
@@ -972,14 +976,7 @@ def _reply_openai(
         model=model,
         api_key=config.openai_api_key,
         reasoning_effort=reasoning_effort,
-        text_verbosity=text_verbosity,
     )
-    system_prompt = config.system_prompt
-    if include_manifest:
-        manifest_text = _load_manifest_md(config)
-        if manifest_text:
-            system_prompt = system_prompt + "\n\n" + manifest_text
-            status("Including MANIFEST.md in context.")
     status(f"Requesting reply from OpenAI model '{model}'...")
     cache_hit_assets: dict[Path, object] = {}
 

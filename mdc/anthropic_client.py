@@ -35,6 +35,18 @@ def _thinking_params(
     )
 
 
+def _content_block_dict(block: object) -> dict[str, object]:
+    """Serialize a content block to only the fields the API accepts on round-trip."""
+    t = getattr(block, "type", None)
+    if t == "text":
+        return {"type": "text", "text": block.text}  # type: ignore[union-attr]
+    if t == "tool_use":
+        return {"type": "tool_use", "id": block.id, "name": block.name, "input": dict(block.input)}  # type: ignore[union-attr]
+    if t == "thinking":
+        return {"type": "thinking", "thinking": block.thinking, "signature": block.signature}  # type: ignore[union-attr]
+    return block.model_dump()  # type: ignore[union-attr]
+
+
 @dataclass
 class AnthropicReply:
     text: str
@@ -117,7 +129,7 @@ class AnthropicChatClient:
 
             msgs = stream_kwargs["messages"]
             assert isinstance(msgs, list)
-            msgs.append({"role": "assistant", "content": [b.model_dump() for b in final_message.content]})
+            msgs.append({"role": "assistant", "content": [_content_block_dict(b) for b in final_message.content]})
             msgs.append({"role": "user", "content": tool_results})
 
         text = "".join(all_text_chunks).strip()

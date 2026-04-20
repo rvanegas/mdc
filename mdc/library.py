@@ -461,6 +461,47 @@ def render_manifest(entries: list[DocEntry]) -> str:
     return "\n".join(lines)
 
 
+def lookup_term(library_path: Path, term: str) -> str:
+    """Look up a canonical index term; return matching docs and related terms."""
+    if not _TERMS_STATE_PATH.exists():
+        return f"Term not found: '{term}'"
+    try:
+        data = json.loads(_TERMS_STATE_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return f"Term not found: '{term}'"
+    if data.get("library_path") != str(library_path):
+        return f"Term not found: '{term}'"
+    term_map = data.get("terms", {})
+    key = next((k for k in term_map if k.casefold() == term.casefold()), None)
+    if key is None:
+        return f"Term not found: '{term}'"
+    lines = [key]
+    docs = sorted(term_map[key], key=lambda x: x["rel_path"])
+    if docs:
+        lines.append("  Documents:")
+        for d in docs:
+            lines.append(f"    {d['rel_path']} — {d['title']}")
+    relations = load_relations(library_path)
+    related = relations.get(key, [])
+    if related:
+        lines.append("  Related: " + "; ".join(sorted(related, key=str.casefold)))
+    return "\n".join(lines)
+
+
+def get_summary(library_path: Path, rel_path: str) -> str:
+    """Return the summary block for a document by relative path."""
+    entries = _load_state(library_path)
+    entry = entries.get(rel_path)
+    if entry is None:
+        return f"No summary found for '{rel_path}'"
+    lines = [f"{entry.rel_path} — {entry.title} — {entry.word_count}w"]
+    if entry.terms:
+        lines.append("  " + "; ".join(entry.terms))
+    if entry.summary:
+        lines.append("  " + entry.summary)
+    return "\n".join(lines)
+
+
 def read_document(library_path: Path, rel_path: str) -> str:
     target = (library_path / rel_path).resolve()
     if not str(target).startswith(str(library_path.resolve()) + "/"):
@@ -486,31 +527,45 @@ def search_library(index: list[DocEntry], query: str) -> list[DocEntry]:
 
 LIBRARY_TOOLS = [
     {
-        "name": "read_document",
-        "description": "Read the full content of a library document by its relative path.",
+        "name": "lookup_term",
+        "description": "Look up an index term and get the list of library documents tagged with it, plus semantically related terms to follow up on.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "term": {
+                    "type": "string",
+                    "description": "A canonical index term (case-insensitive).",
+                }
+            },
+            "required": ["term"],
+        },
+    },
+    {
+        "name": "get_summary",
+        "description": "Get the title, word count, summary, and index terms for a specific library document.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Relative path as shown in the manifest (e.g. 'philosophy/stoicism.md')",
+                    "description": "Relative path of the document (e.g. 'philosophy/stoicism.md').",
                 }
             },
             "required": ["path"],
         },
     },
     {
-        "name": "search_library",
-        "description": "Search the library for documents matching a keyword query. Returns titles, summaries, and index terms of top matches.",
+        "name": "read_document",
+        "description": "Read the full content of a library document.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "query": {
+                "path": {
                     "type": "string",
-                    "description": "Search terms to find relevant documents.",
+                    "description": "Relative path of the document.",
                 }
             },
-            "required": ["query"],
+            "required": ["path"],
         },
     },
 ]

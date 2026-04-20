@@ -12,7 +12,7 @@ _NOTES_HEADING_RE = re.compile(rf"^({_H}) Notes\s*$", re.MULTILINE)
 _RELATED_HEADING_RE = re.compile(rf"^({_H}) Related\s*$", re.MULTILINE)
 _NEXT_HEADING_RE = re.compile(rf"^{_H} ", re.MULTILINE)
 ASSISTANT_NAME = "Claude"  # default for mdform-format transcripts
-REFERENCE_LINE_RE = re.compile(r"^\| .+\([^)]+\)\s+\*?[^*\n]+\*?\s*$")
+REFERENCE_LINE_RE = re.compile(r"^\| .+\([^)]+\).+$")
 _REF_TITLE_SPLIT_RE = re.compile(r"(\([^)]+\)\s+)")
 
 
