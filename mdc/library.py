@@ -13,6 +13,7 @@ INDEX_FILENAME = "INDEX.md"
 KEYS_FILENAME = "KEYS.md"
 _STATE_PATH = Path("~/.local/state/mdc/library-manifest.json").expanduser()
 _TERMS_STATE_PATH = Path("~/.local/state/mdc/library-index.json").expanduser()
+_RELATIONS_STATE_PATH = Path("~/.local/state/mdc/library-relations.json").expanduser()
 
 
 @dataclass(frozen=True)
@@ -206,6 +207,7 @@ def write_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
     _TERMS_STATE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     # Markdown mirror
+    relations = load_relations(library_path)
     top_level = [t for t in sorted(inverted, key=str.casefold) if t not in grouped_subterms]
     total = len(inverted)
     lines = ["", "# Terms", "", f"{total} term(s).", ""]
@@ -213,6 +215,9 @@ def write_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
         lines.append(_md_escape(term))
         for f in sorted(inverted[term], key=lambda x: x["rel_path"]):
             lines.append(f"  {_md_escape(f['rel_path'])} — {_md_escape(f['title'])}")
+        related = relations.get(term, [])
+        if related:
+            lines.append("  Related: " + "; ".join(_md_escape(r) for r in sorted(related, key=str.casefold)))
         subterms = resolved_groups.get(term, [])
         if subterms:
             lines.append("")
@@ -222,6 +227,9 @@ def write_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
             lines.append(f"  {_md_escape(subterm)}")
             for f in sorted(inverted[subterm], key=lambda x: x["rel_path"]):
                 lines.append(f"    {_md_escape(f['rel_path'])} — {_md_escape(f['title'])}")
+            sub_related = relations.get(subterm, [])
+            if sub_related:
+                lines.append("    Related: " + "; ".join(_md_escape(r) for r in sorted(sub_related, key=str.casefold)))
             lines.append("")
         if not subterms:
             lines.append("")
@@ -321,10 +329,61 @@ def load_terms(library_path: Path) -> set[str]:
     return set(data.get("terms", {}).keys())
 
 
+def load_relations(library_path: Path) -> dict[str, list[str]]:
+    """Load the relations map from the relations state file."""
+    if not _RELATIONS_STATE_PATH.exists():
+        return {}
+    try:
+        data = json.loads(_RELATIONS_STATE_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if data.get("library_path") != str(library_path):
+        return {}
+    return data.get("relations", {})
+
+
+def save_relations(library_path: Path, relations: dict[str, list[str]]) -> None:
+    """Write the relations map to the relations state file."""
+    _RELATIONS_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    data = {"library_path": str(library_path), "relations": relations}
+    _RELATIONS_STATE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def prune_relations(library_path: Path, removed_terms: set[str]) -> None:
+    """Remove deleted terms from the relations map."""
+    if not removed_terms or not _RELATIONS_STATE_PATH.exists():
+        return
+    try:
+        data = json.loads(_RELATIONS_STATE_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    if data.get("library_path") != str(library_path):
+        return
+    relations: dict[str, list[str]] = data.get("relations", {})
+    if not relations:
+        return
+    for term in removed_terms:
+        relations.pop(term, None)
+    for term in list(relations):
+        relations[term] = [r for r in relations[term] if r not in removed_terms]
+    data["relations"] = relations
+    _RELATIONS_STATE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _sanitize_term(term: str) -> tuple[str, str | None]:
+    """Replace ';' and ':' with ','. Returns (cleaned, warning_or_none)."""
+    stripped = term.strip()
+    cleaned = stripped.replace(";", ",").replace(":", ",").strip()
+    if cleaned != stripped:
+        return cleaned, f"term sanitized: \"{stripped}\" → \"{cleaned}\""
+    return cleaned, None
+
+
 def build_index(
     library_path: Path,
     summarize: Callable[[str, int], tuple[str, list[str]]] | None = None,
     on_progress: Callable[[str, str], None] | None = None,
+    on_warning: Callable[[str], None] | None = None,
 ) -> tuple[list[DocEntry], list[str]]:
     """Build or update MANIFEST.md and INDEX.md for library_path.
 
@@ -357,10 +416,18 @@ def build_index(
         wc = _word_count(content)
 
         if summarize:
-            summary, terms = summarize(content, wc)
+            summary, raw_terms = summarize(content, wc)
         else:
             summary = _fallback_summary(content)
-            terms = []
+            raw_terms = []
+
+        terms = []
+        for t in raw_terms:
+            clean, warn = _sanitize_term(t)
+            if warn and on_warning:
+                on_warning(warn)
+            if clean:
+                terms.append(clean)
 
         entry = DocEntry(
             rel_path=rel_path, title=title, word_count=wc,
