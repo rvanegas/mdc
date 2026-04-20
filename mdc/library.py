@@ -461,7 +461,7 @@ def render_manifest(entries: list[DocEntry]) -> str:
     return "\n".join(lines)
 
 
-def lookup_term(library_path: Path, term: str) -> str:
+def lookup_term(library_path: Path, term: str, exclude: str | None = None) -> str:
     """Look up a canonical index term; return matching docs and related terms."""
     if not _TERMS_STATE_PATH.exists():
         return f"Term not found: '{term}'"
@@ -472,11 +472,17 @@ def lookup_term(library_path: Path, term: str) -> str:
     if data.get("library_path") != str(library_path):
         return f"Term not found: '{term}'"
     term_map = data.get("terms", {})
+    alias_map, _, _, _ = parse_keys_md(library_path)
+    resolved = alias_map.get(term) or alias_map.get(term.casefold())
+    if resolved is not None:
+        term = resolved
     key = next((k for k in term_map if k.casefold() == term.casefold()), None)
     if key is None:
         return f"Term not found: '{term}'"
     lines = [key]
     docs = sorted(term_map[key], key=lambda x: x["rel_path"])
+    if exclude:
+        docs = [d for d in docs if d["rel_path"] != exclude]
     if docs:
         lines.append("  Documents:")
         for d in docs:
@@ -488,8 +494,10 @@ def lookup_term(library_path: Path, term: str) -> str:
     return "\n".join(lines)
 
 
-def get_summary(library_path: Path, rel_path: str) -> str:
+def get_summary(library_path: Path, rel_path: str, exclude: str | None = None) -> str:
     """Return the summary block for a document by relative path."""
+    if exclude and rel_path == exclude:
+        return f"'{rel_path}' is the document currently being replied to and is not available."
     entries = _load_state(library_path)
     entry = entries.get(rel_path)
     if entry is None:
@@ -502,7 +510,9 @@ def get_summary(library_path: Path, rel_path: str) -> str:
     return "\n".join(lines)
 
 
-def read_document(library_path: Path, rel_path: str) -> str:
+def read_document(library_path: Path, rel_path: str, exclude: str | None = None) -> str:
+    if exclude and rel_path == exclude:
+        return f"'{rel_path}' is the document currently being replied to and is not available."
     target = (library_path / rel_path).resolve()
     if not str(target).startswith(str(library_path.resolve()) + "/"):
         return f"Error: path '{rel_path}' is outside the library."

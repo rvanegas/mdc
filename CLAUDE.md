@@ -67,7 +67,7 @@ Files must satisfy 12 rules enforced by `form.py`:
 
 ## Distribution
 
-To build a wheel for distribution (no internet required on the recipient's machine):
+To build a wheel for distribution:
 
 ```bash
 pip install build

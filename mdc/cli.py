@@ -30,6 +30,10 @@ _OPENAI_PRICING: dict[str, tuple[float, float]] = {
     "o4-mini":     (1.10,  4.40),
 }
 
+class _LibraryTermNotFoundError(Exception):
+    def __init__(self, terms: list[str]) -> None:
+        self.terms = terms
+
 from mdc.assets import build_anthropic_input, build_chat_input, build_response_input, collect_local_assets
 from mdc.config import _default_assistant_name, load_config
 from mdc.form import check_file, fix_object_replacement, fix_rtl_spans, fix_title_section, slugify
@@ -826,14 +830,19 @@ def run_reply(
         return 1
 
     if effective_model.startswith("claude-"):
-        reply_text = _reply_anthropic(
-            transcript, config, path, effective_model,
-            reasoning_effort=reasoning_effort,
-            verbose=verbose,
-            status=status,
-            library=library,
-            terms=terms or [],
-        )
+        try:
+            reply_text = _reply_anthropic(
+                transcript, config, path, effective_model,
+                reasoning_effort=reasoning_effort,
+                verbose=verbose,
+                status=status,
+                library=library,
+                terms=terms or [],
+            )
+        except _LibraryTermNotFoundError as exc:
+            missing = ", ".join(f'"{t}"' for t in exc.terms)
+            print(f"\nAborted: library term(s) not found: {missing}. Update KEYS.md and re-run.")
+            return 1
     elif effective_model.startswith("ollama/"):
         reply_text = _reply_ollama(
             transcript, config, path, effective_model,
@@ -891,16 +900,21 @@ def _reply_anthropic(
         lib = config.library_path
         tools = LIBRARY_TOOLS
 
+        try:
+            exclude = str(path.resolve().relative_to(lib.resolve()))
+        except ValueError:
+            exclude = None
+
         preloaded: list[str] = []
         for term in (terms or []):
-            result = lookup_term(lib, term)
+            result = lookup_term(lib, term, exclude=exclude)
             if result.startswith("Term not found"):
                 status(f"! library term not found: \"{term}\"")
             else:
                 preloaded.append(result)
 
         library_tools_prompt = (
-            "You have access to a library of documents. To find relevant material:\n"
+            "You have access to a library of the user's own writings. To find relevant material:\n"
             "1. Call lookup_term with a relevant index term. It returns matching documents and related terms.\n"
             "2. Call get_summary for documents that look relevant.\n"
             "3. Call read_document only when a summary confirms it is worth reading in full.\n"
@@ -911,18 +925,25 @@ def _reply_anthropic(
         else:
             library_context = library_tools_prompt
 
+        missing_terms: list[str] = []
+
         def tool_executor(tool_name: str, tool_input: dict[str, object]) -> str:
             if tool_name == "lookup_term":
                 term = str(tool_input.get("term", ""))
-                result = lookup_term(lib, term)
+                result = lookup_term(lib, term, exclude=exclude)
                 if result.startswith("Term not found"):
                     status(f"! library term not found: \"{term}\"")
+                    missing_terms.append(term)
                 return result
             if tool_name == "get_summary":
-                return get_summary(lib, str(tool_input.get("path", "")))
+                return get_summary(lib, str(tool_input.get("path", "")), exclude=exclude)
             if tool_name == "read_document":
-                return read_document(lib, str(tool_input.get("path", "")))
+                return read_document(lib, str(tool_input.get("path", "")), exclude=exclude)
             return f"Unknown tool: {tool_name}"
+
+        def post_batch() -> None:
+            if missing_terms:
+                raise _LibraryTermNotFoundError(list(missing_terms))
 
         status("Library tools active.")
 
@@ -936,6 +957,7 @@ def _reply_anthropic(
         reasoning_effort=reasoning_effort,
         tools=tools,
         tool_executor=tool_executor,
+        post_batch=post_batch if library else None,
     )
     if verbose:
         _print_anthropic_usage(model, reply)

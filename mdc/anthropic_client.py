@@ -73,6 +73,7 @@ class AnthropicChatClient:
         reasoning_effort: str | None = None,
         tools: list[dict[str, object]] | None = None,
         tool_executor: Callable[[str, dict[str, object]], str] | None = None,
+        post_batch: Callable[[], None] | None = None,
     ) -> AnthropicReply:
         thinking, output_config, max_tokens = _thinking_params(reasoning_effort)
         stream_kwargs: dict[str, object] = {
@@ -126,6 +127,9 @@ class AnthropicChatClient:
                     "tool_use_id": tu.id,
                     "content": result,
                 })
+
+            if post_batch is not None:
+                post_batch()
 
             msgs = stream_kwargs["messages"]
             assert isinstance(msgs, list)
