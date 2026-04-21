@@ -431,9 +431,9 @@ def write_related(library_path: Path, entries: list[DocEntry]) -> list[str]:
         title = title_by_path.get(rel_path, rel_path)
         lines.append(f"{_md_escape(rel_path)} — {_md_escape(title)}")
         for tgt in sorted(forward.get(rel_path, [])):
-            lines.append(f"  → {_md_escape(tgt)} — {_md_escape(title_by_path.get(tgt, tgt))}")
+            lines.append(f"  -> {_md_escape(tgt)} — {_md_escape(title_by_path.get(tgt, tgt))}")
         for src in sorted(backlinks.get(rel_path, [])):
-            lines.append(f"  ← {_md_escape(src)} — {_md_escape(title_by_path.get(src, src))}")
+            lines.append(f"  <- {_md_escape(src)} — {_md_escape(title_by_path.get(src, src))}")
         lines.append("")
         lines.append("---")
     (library_path / RELATED_FILENAME).write_text("\n".join(lines), encoding="utf-8")

@@ -19,6 +19,5 @@ ollama_base_url = "http://localhost:11434/v1"
 #   anything else    OpenAI
 model = "claude-sonnet-4-6"
 
-# Model used by "mdc index" to summarize library documents.
-# Summary and term count scale automatically with document length.
-index_model = "claude-haiku-4-5"
+# Model used by "mdc index" to summarize library documents. Default: claude-haiku-4-5.
+# index_model = "claude-haiku-4-5"

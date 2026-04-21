@@ -68,9 +68,11 @@ def _require_md(path: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from mdc.config import DEFAULT_CONFIG_PATH, _write_default_config
+    from mdc.config import DEFAULT_CONFIG_PATH, DEFAULT_SYSTEM_PROMPT_PATH, _write_default_config, _write_default_system_prompt
     if not DEFAULT_CONFIG_PATH.exists():
         _write_default_config(DEFAULT_CONFIG_PATH)
+    if not DEFAULT_SYSTEM_PROMPT_PATH.exists():
+        _write_default_system_prompt(DEFAULT_SYSTEM_PROMPT_PATH)
 
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -79,7 +81,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "index":
             return run_index(
                 library_path=args.library_path,
-                model=args.model,
                 refs_only=args.refs_only_all,
             )
         if args.command == "relate":
@@ -109,6 +110,8 @@ def main(argv: list[str] | None = None) -> int:
                 library=args.library,
                 terms=args.terms,
             )
+        if args.command == "config":
+            return run_config()
         if args.command == "pdf":
             return run_pdf(Path(args.path), quiet=args.quiet)
     except TranscriptError as exc:
@@ -168,11 +171,6 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default=None,
         help="Path to library directory (overrides config file).",
-    )
-    index_parser.add_argument(
-        "-m", "--model",
-        default=None,
-        help="Model to use for summarization (e.g. ollama/llama3.2). Overrides config file.",
     )
     index_parser.add_argument(
         "--refs-only-all",
@@ -272,7 +270,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pdf_parser.add_argument("path", help="Path to the markdown file.")
 
+    # config
+    subparsers.add_parser(
+        "config",
+        help="Show configuration and data file locations.",
+    )
+
     return parser
+
+
+def run_config() -> int:
+    from mdc.config import DEFAULT_CONFIG_PATH, DEFAULT_SYSTEM_PROMPT_PATH, _cache_dir, _state_dir
+    print(f"Config file:   {DEFAULT_CONFIG_PATH}")
+    print(f"System prompt: {DEFAULT_SYSTEM_PROMPT_PATH}")
+    print(f"State dir:     {_state_dir}")
+    print(f"Cache dir:     {_cache_dir}")
+    return 0
 
 
 def _index_prompt(content: str, word_count: int) -> str:
@@ -331,7 +344,7 @@ def _parse_index_reply(text: str) -> tuple[str, list[str]]:
     return summary, terms
 
 
-def run_index(library_path: str | None, model: str | None, refs_only: bool = False) -> int:
+def run_index(library_path: str | None, refs_only: bool = False) -> int:
     from mdc.library import MANIFEST_FILENAME, build_index
 
     config = load_config()
@@ -351,7 +364,7 @@ def run_index(library_path: str | None, model: str | None, refs_only: bool = Fal
     last_cost: list[float] = [0.0]
 
     if not refs_only:
-        effective_model = model or config.index_model
+        effective_model = config.index_model
         if effective_model.startswith("claude-"):
             from mdc.anthropic_client import AnthropicChatClient
             client = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
@@ -393,7 +406,7 @@ def run_index(library_path: str | None, model: str | None, refs_only: bool = Fal
         if status == "indexed":
             if last_status[0] in ("cached", "skipped"):
                 print()
-            cost_str = f"  ${last_cost[0]:.5f}  (total ${total_cost:.2f})" if total_cost else ""
+            cost_str = f"  {_format_cost(last_cost[0])}  (total {_format_total(total_cost)})" if total_cost else ""
             print(f"  indexed  {rel_path}{cost_str}")
         elif status in ("cached", "skipped"):
             n = counts[status]
@@ -423,7 +436,7 @@ def run_index(library_path: str | None, model: str | None, refs_only: bool = Fal
     if counts.get("skipped"):
         parts.append(f"{counts['skipped']} skipped (too large)")
     if total_cost:
-        parts.append(f"total cost {_format_cost(total_cost)}")
+        parts.append(f"total cost {_format_total(total_cost)}")
     print(f"\n{', '.join(parts)}.")
     print(f"Written to {lib_path / MANIFEST_FILENAME}.")
 
@@ -598,7 +611,7 @@ def run_relate(library_path: str | None, model: str | None, reprocess_all: bool 
           f"in {total_batches} batches using model '{effective_model}'...")
 
     for i, batch_ids in enumerate(batches, 1):
-        cost_str = f"  (total {_format_cost(total_cost)})" if total_cost else ""
+        cost_str = f"  (total {_format_total(total_cost)})" if total_cost else ""
         print(f"  batch {i}/{total_batches}{cost_str}")
         prompt = _relate_prompt(id_to_term, batch_ids)
         text = call_model(prompt)
@@ -614,7 +627,7 @@ def run_relate(library_path: str | None, model: str | None, reprocess_all: bool 
 
         save_relations(lib_path, relations)
 
-    total_str = f"  Total cost: {_format_cost(total_cost)}." if total_cost else ""
+    total_str = f"  Total cost: {_format_total(total_cost)}." if total_cost else ""
     print(f"\nRelations written for {len(relations)} terms.{total_str}")
     return 0
 
@@ -756,6 +769,7 @@ def _run_reply_watch(
     path: Path,
     model: str | None = None,
     reasoning_effort: str | None = None,
+    verbose: bool = False,
 ) -> int:
     config = load_config()
     effective_model = model or config.model
@@ -783,14 +797,14 @@ def _run_reply_watch(
             if effective_model.startswith("claude-"):
                 reply_text = _reply_anthropic(transcript, config, path, effective_model,
                                               reasoning_effort=reasoning_effort,
-                                              verbose=False, status=noop)
+                                              verbose=verbose, status=noop)
             elif effective_model.startswith("ollama/"):
                 reply_text = _reply_ollama(transcript, config, path, effective_model,
-                                           verbose=False, status=noop)
+                                           verbose=verbose, status=noop)
             else:
                 reply_text = _reply_openai(transcript, config, path, effective_model,
                                            reasoning_effort=reasoning_effort,
-                                           verbose=False, status=noop)
+                                           verbose=verbose, status=noop)
 
             reply_text = _upgrade_reply_headings(reply_text)
             if not reply_text.endswith("\n"):
@@ -824,7 +838,7 @@ def run_reply(
     if _require_md(path):
         return 1
     if watch:
-        return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort)
+        return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort, verbose=verbose)
 
     def status(msg: str) -> None:
         if verbose:
@@ -1084,9 +1098,11 @@ def _lookup_price(model: str, table: dict[str, tuple[float, float]]) -> tuple[fl
 
 
 def _format_cost(dollars: float) -> str:
-    if dollars < 0.01:
-        return f"${dollars * 100:.3f}¢"
-    return f"${dollars:.4f}"
+    return f"${dollars:.5f}"
+
+
+def _format_total(dollars: float) -> str:
+    return f"${dollars:.2f}"
 
 
 def _print_anthropic_usage(model: str, reply) -> None:
@@ -1112,7 +1128,7 @@ def _print_anthropic_usage(model: str, reply) -> None:
     else:
         parts.append("cost=unknown model")
 
-    print(f"\n[{' | '.join(parts)}]", file=sys.stderr)
+    print(f"  {' | '.join(parts)}")
 
 
 def _print_openai_usage(model: str, reply) -> None:
@@ -1126,4 +1142,4 @@ def _print_openai_usage(model: str, reply) -> None:
         parts.append(_format_cost(cost))
     else:
         parts.append("cost=unknown model")
-    print(f"\n[{' | '.join(parts)}]", file=sys.stderr)
+    print(f"  {' | '.join(parts)}")

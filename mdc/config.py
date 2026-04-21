@@ -11,7 +11,7 @@ import tomllib
 def _platform_dir(xdg_subpath: str, win_fn: str) -> Path:
     if sys.platform == "win32":
         import platformdirs
-        return Path(getattr(platformdirs, win_fn)("mdc"))
+        return Path(getattr(platformdirs, win_fn)("mdc", appauthor=False))
     return Path.home() / xdg_subpath / "mdc"
 
 
@@ -40,6 +40,14 @@ _FALLBACK_SYSTEM_PROMPT = (
     "Respond helpfully to the latest human message."
 )
 
+_REFERENCE_INSTRUCTION = """\
+Place a brief list of references at the end of the response, formatted as follows:
+
+| Last, First (year) *Title* optional text
+| Last1, First1, First2 Last2, First3 Last3 (year) *Title* optional text
+
+Year may be a single year (1989), a range (53-55), a slash pair (1781/1787), or approximate (c. 385-370 BCE)."""
+
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -49,14 +57,19 @@ class AppConfig:
     anthropic_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434/v1"
     library_path: Path | None = None
-    index_model: str = "ollama/llama3.2"
+    index_model: str = "claude-haiku-4-5"
 
 
 def _write_default_config(path: Path) -> None:
     from importlib.resources import files
-    template = files("mdc").joinpath("config.example.toml").read_text(encoding="utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(template, encoding="utf-8")
+    path.write_text(files("mdc").joinpath("config.example.toml").read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def _write_default_system_prompt(path: Path) -> None:
+    from importlib.resources import files
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(files("mdc").joinpath("system.example.md").read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def load_config() -> AppConfig:
@@ -96,6 +109,9 @@ def load_config() -> AppConfig:
 
 def _load_system_prompt(path: Path) -> str:
     if not path.exists():
-        return _FALLBACK_SYSTEM_PROMPT
-    content = path.read_text(encoding="utf-8").strip()
-    return content or _FALLBACK_SYSTEM_PROMPT
+        base = _FALLBACK_SYSTEM_PROMPT
+    else:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        content = "\n".join(line for line in lines if not line.startswith("//")).strip()
+        base = content or _FALLBACK_SYSTEM_PROMPT
+    return f"{base}\n\n{_REFERENCE_INSTRUCTION}"
