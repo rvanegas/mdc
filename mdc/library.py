@@ -11,9 +11,13 @@ from pathlib import Path
 MANIFEST_FILENAME = "MANIFEST.md"
 INDEX_FILENAME = "INDEX.md"
 KEYS_FILENAME = "KEYS.md"
+REFERENCES_FILENAME = "REFERENCES.md"
 _STATE_PATH = Path("~/.local/state/mdc/library-manifest.json").expanduser()
 _TERMS_STATE_PATH = Path("~/.local/state/mdc/library-index.json").expanduser()
 _RELATIONS_STATE_PATH = Path("~/.local/state/mdc/library-relations.json").expanduser()
+
+_REFS_SECTION_RE = re.compile(r"^## References\s*$", re.MULTILINE)
+_NEXT_H2_RE = re.compile(r"^## ", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -24,6 +28,7 @@ class DocEntry:
     summary: str
     terms: tuple[str, ...] = field(default_factory=tuple)
     indexed_at: float = 0.0  # Unix timestamp; used for cache invalidation
+    refs: tuple[str, ...] | None = None  # None = not yet extracted
 
 
 def _extract_title(content: str, fallback: str) -> str:
@@ -44,6 +49,24 @@ def _fallback_summary(content: str) -> str:
 
 def _word_count(content: str) -> int:
     return len(content.split())
+
+
+def _extract_refs(content: str) -> tuple[str, ...]:
+    m = _REFS_SECTION_RE.search(content)
+    if not m:
+        return ()
+    start = m.end()
+    next_h = _NEXT_H2_RE.search(content, start)
+    section = content[start: next_h.start() if next_h else len(content)]
+    refs = []
+    for line in section.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("| "):
+            stripped = stripped[2:]
+        refs.append(stripped)
+    return tuple(refs)
 
 
 def summary_target(word_count: int) -> str:
@@ -205,6 +228,15 @@ def write_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
     return warnings
 
 
+def write_refs(library_path: Path, entries: list[DocEntry]) -> None:
+    all_refs = sorted(ref for e in entries for ref in (e.refs or ()))
+    lines = ["", "# References", "", f"{len(all_refs)} reference(s).", ""]
+    for ref in all_refs:
+        lines.append(ref)
+    lines.append("")
+    (library_path / REFERENCES_FILENAME).write_text("\n".join(lines), encoding="utf-8")
+
+
 def _parse_indexed_at(value: object) -> float:
     if not value:
         return 0.0
@@ -222,10 +254,12 @@ def _entry_to_dict(e: DocEntry) -> dict:
         "indexed_at": datetime.datetime.fromtimestamp(e.indexed_at, tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if e.indexed_at else None,
         "terms": list(e.terms),
         "summary": e.summary,
+        "refs": list(e.refs) if e.refs is not None else None,
     }
 
 
 def _entry_from_dict(d: dict) -> DocEntry:
+    refs = d.get("refs")
     return DocEntry(
         rel_path=d["rel_path"],
         title=d["title"],
@@ -233,6 +267,7 @@ def _entry_from_dict(d: dict) -> DocEntry:
         summary=d["summary"],
         terms=tuple(d.get("terms", [])),
         indexed_at=_parse_indexed_at(d.get("indexed_at")),
+        refs=tuple(refs) if refs is not None else None,
     )
 
 
@@ -333,11 +368,20 @@ def _sanitize_term(term: str) -> tuple[str, str | None]:
     return cleaned, None
 
 
+def _finalize(library_path: Path, entries_by_path: dict[str, DocEntry], result: list[DocEntry]) -> list[str]:
+    _save_state(library_path, entries_by_path)
+    write_manifest(library_path, result, datetime.datetime.now())
+    warnings = write_index(library_path, result)
+    write_refs(library_path, result)
+    return warnings
+
+
 def build_index(
     library_path: Path,
     summarize: Callable[[str, int], tuple[str, list[str]]] | None = None,
     on_progress: Callable[[str, str], None] | None = None,
     on_warning: Callable[[str], None] | None = None,
+    refs_only: bool = False,
 ) -> tuple[list[DocEntry], list[str]]:
     """Build or update MANIFEST.md and INDEX.md for library_path.
 
@@ -345,17 +389,55 @@ def build_index(
     on_progress(rel_path, status) where status is 'cached' or 'indexed'
     """
     entries_by_path = _load_state(library_path)
+
+    if refs_only:
+        result = []
+        for rel_path, existing in sorted(entries_by_path.items()):
+            md_path = library_path / rel_path
+            if not md_path.exists():
+                continue
+            refs: tuple[str, ...] = ()
+            if md_path.stat().st_size <= 500_000:
+                content = md_path.read_text(encoding="utf-8", errors="replace")
+                refs = _extract_refs(content)
+            updated = DocEntry(
+                rel_path=existing.rel_path, title=existing.title,
+                word_count=existing.word_count, summary=existing.summary,
+                terms=existing.terms, indexed_at=existing.indexed_at,
+                refs=refs,
+            )
+            result.append(updated)
+            entries_by_path[rel_path] = updated
+            if on_progress:
+                on_progress(rel_path, "cached")
+        return result, _finalize(library_path, entries_by_path, result)
+
     now_ts = datetime.datetime.now().timestamp()
-    result: list[DocEntry] = []
+    result = []
 
     for md_path in sorted(library_path.rglob("*.md")):
-        if md_path.name in (MANIFEST_FILENAME, INDEX_FILENAME, KEYS_FILENAME):
+        if md_path.name in (MANIFEST_FILENAME, INDEX_FILENAME, KEYS_FILENAME, REFERENCES_FILENAME):
             continue
         rel_path = str(md_path.relative_to(library_path))
 
         existing = entries_by_path.get(rel_path)
         if existing is not None and md_path.stat().st_mtime <= existing.indexed_at:
-            result.append(existing)
+            if existing.refs is not None:
+                result.append(existing)
+                if on_progress:
+                    on_progress(rel_path, "cached")
+                continue
+            # One-off: back-fill refs for entries cached before this feature existed.
+            content = md_path.read_text(encoding="utf-8", errors="replace")
+            updated = DocEntry(
+                rel_path=existing.rel_path, title=existing.title,
+                word_count=existing.word_count, summary=existing.summary,
+                terms=existing.terms, indexed_at=existing.indexed_at,
+                refs=_extract_refs(content),
+            )
+            result.append(updated)
+            entries_by_path[rel_path] = updated
+            _save_state(library_path, entries_by_path)
             if on_progress:
                 on_progress(rel_path, "cached")
             continue
@@ -386,6 +468,7 @@ def build_index(
         entry = DocEntry(
             rel_path=rel_path, title=title, word_count=wc,
             summary=summary, terms=tuple(terms), indexed_at=now_ts,
+            refs=_extract_refs(content),
         )
         result.append(entry)
         if entry.summary and entry.terms:
@@ -397,10 +480,7 @@ def build_index(
 
     # Remove entries for files that no longer exist.
     final_by_path = {e.rel_path: e for e in result}
-    _save_state(library_path, final_by_path)
-    write_manifest(library_path, result, datetime.datetime.now())
-    warnings = write_index(library_path, result)
-    return result, warnings
+    return result, _finalize(library_path, final_by_path, result)
 
 
 def render_manifest(entries: list[DocEntry]) -> str:

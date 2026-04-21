@@ -76,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
             return run_index(
                 library_path=args.library_path,
                 model=args.model,
+                refs_only=args.refs_only_all,
             )
         if args.command == "relate":
             return run_relate(
@@ -168,6 +169,12 @@ def build_parser() -> argparse.ArgumentParser:
         "-m", "--model",
         default=None,
         help="Model to use for summarization (e.g. ollama/llama3.2). Overrides config file.",
+    )
+    index_parser.add_argument(
+        "--refs-only-all",
+        action="store_true",
+        default=False,
+        help="Extract references from all documents without calling any AI model.",
     )
 
     # new
@@ -320,7 +327,7 @@ def _parse_index_reply(text: str) -> tuple[str, list[str]]:
     return summary, terms
 
 
-def run_index(library_path: str | None, model: str | None) -> int:
+def run_index(library_path: str | None, model: str | None, refs_only: bool = False) -> int:
     from mdc.library import MANIFEST_FILENAME, build_index
 
     config = load_config()
@@ -335,41 +342,43 @@ def run_index(library_path: str | None, model: str | None) -> int:
         print(f"Error: '{lib_path}' is not a directory.")
         return 1
 
-    effective_model = model or config.index_model
+    summarize = None
     total_cost = 0.0
     last_cost: list[float] = [0.0]
 
-    if effective_model.startswith("claude-"):
-        from mdc.anthropic_client import AnthropicChatClient
-        client = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
-        rates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
+    if not refs_only:
+        effective_model = model or config.index_model
+        if effective_model.startswith("claude-"):
+            from mdc.anthropic_client import AnthropicChatClient
+            client = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
+            rates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
 
-        def summarize(content: str, word_count: int) -> tuple[str, list[str]]:
-            nonlocal total_cost
-            system = "You are a library indexing assistant."
-            messages = [{"role": "user", "content": _index_prompt(content, word_count)}]
-            reply = client.generate_reply(system, messages)
-            if rates:
-                in_rate, out_rate = rates
-                cost = (
-                    reply.input_tokens * in_rate / 1_000_000
-                    + reply.output_tokens * out_rate / 1_000_000
-                    + reply.cache_creation_tokens * in_rate * 1.25 / 1_000_000
-                    + reply.cache_read_tokens * in_rate * 0.10 / 1_000_000
-                )
-                total_cost += cost
-                last_cost[0] = cost
-            return _parse_index_reply(reply.text)
+            def summarize(content: str, word_count: int) -> tuple[str, list[str]]:
+                nonlocal total_cost
+                system = "You are a library indexing assistant."
+                messages = [{"role": "user", "content": _index_prompt(content, word_count)}]
+                reply = client.generate_reply(system, messages)
+                if rates:
+                    in_rate, out_rate = rates
+                    cost = (
+                        reply.input_tokens * in_rate / 1_000_000
+                        + reply.output_tokens * out_rate / 1_000_000
+                        + reply.cache_creation_tokens * in_rate * 1.25 / 1_000_000
+                        + reply.cache_read_tokens * in_rate * 0.10 / 1_000_000
+                    )
+                    total_cost += cost
+                    last_cost[0] = cost
+                return _parse_index_reply(reply.text)
 
-    else:
-        from mdc.ollama_client import OllamaChatClient
-        ollama_model = effective_model.removeprefix("ollama/")
-        client = OllamaChatClient(model=ollama_model, base_url=config.ollama_base_url)
+        else:
+            from mdc.ollama_client import OllamaChatClient
+            ollama_model = effective_model.removeprefix("ollama/")
+            client = OllamaChatClient(model=ollama_model, base_url=config.ollama_base_url)
 
-        def summarize(content: str, word_count: int) -> tuple[str, list[str]]:
-            messages = [{"role": "user", "content": _index_prompt(content, word_count)}]
-            reply = client.generate_reply(messages)
-            return _parse_index_reply(reply.text)
+            def summarize(content: str, word_count: int) -> tuple[str, list[str]]:
+                messages = [{"role": "user", "content": _index_prompt(content, word_count)}]
+                reply = client.generate_reply(messages)
+                return _parse_index_reply(reply.text)
 
     counts: dict[str, int] = {}
     last_status: list[str] = [""]
@@ -393,7 +402,10 @@ def run_index(library_path: str | None, model: str | None) -> int:
     from mdc.library import load_terms
     old_terms = load_terms(lib_path)
 
-    print(f"Indexing {lib_path} with model '{effective_model}'...")
+    if refs_only:
+        print(f"Extracting references from {lib_path} (no model)...")
+    else:
+        print(f"Indexing {lib_path} with model '{effective_model}'...")
     entries, keys_warnings = build_index(lib_path, summarize=summarize, on_progress=on_progress, on_warning=on_warning)
 
     if counts.get("cached") or counts.get("skipped"):
