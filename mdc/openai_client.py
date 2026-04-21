@@ -135,7 +135,8 @@ class _AssetCacheEntry:
 
 class _AssetCache:
     def __init__(self) -> None:
-        self._path = Path("~/.cache/mdc/asset-cache.json").expanduser()
+        from mdc.config import _cache_dir
+        self._path = _cache_dir / "asset-cache.json"
         self._entries = self._load()
 
     def lookup(self, asset: LocalAssetReference) -> str | None:

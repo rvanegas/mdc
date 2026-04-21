@@ -12,11 +12,15 @@ MANIFEST_FILENAME = "MANIFEST.md"
 INDEX_FILENAME = "INDEX.md"
 KEYS_FILENAME = "KEYS.md"
 REFERENCES_FILENAME = "REFERENCES.md"
-_STATE_PATH = Path("~/.local/state/mdc/library-manifest.json").expanduser()
-_TERMS_STATE_PATH = Path("~/.local/state/mdc/library-index.json").expanduser()
-_RELATIONS_STATE_PATH = Path("~/.local/state/mdc/library-relations.json").expanduser()
+RELATED_FILENAME = "RELATED.md"
+from mdc.config import _state_dir as _mdc_state_dir
+_STATE_DIR = _mdc_state_dir
+_STATE_PATH = _STATE_DIR / "library-manifest.json"
+_TERMS_STATE_PATH = _STATE_DIR / "library-index.json"
+_RELATIONS_STATE_PATH = _STATE_DIR / "library-relations.json"
 
 _REFS_SECTION_RE = re.compile(r"^## References\s*$", re.MULTILINE)
+_RELATED_SECTION_RE = re.compile(r"^## Related\s*$", re.MULTILINE)
 _NEXT_H2_RE = re.compile(r"^## ", re.MULTILINE)
 
 
@@ -28,7 +32,8 @@ class DocEntry:
     summary: str
     terms: tuple[str, ...] = field(default_factory=tuple)
     indexed_at: float = 0.0  # Unix timestamp; used for cache invalidation
-    refs: tuple[str, ...] | None = None  # None = not yet extracted
+    refs: tuple[str, ...] | None = None      # None = not yet extracted
+    related: tuple[str, ...] | None = None   # None = not yet extracted
 
 
 def _extract_title(content: str, fallback: str) -> str:
@@ -51,22 +56,23 @@ def _word_count(content: str) -> int:
     return len(content.split())
 
 
-def _extract_refs(content: str) -> tuple[str, ...]:
-    m = _REFS_SECTION_RE.search(content)
+def _extract_section(content: str, section_re: re.Pattern) -> tuple[str, ...]:
+    m = section_re.search(content)
     if not m:
         return ()
     start = m.end()
     next_h = _NEXT_H2_RE.search(content, start)
     section = content[start: next_h.start() if next_h else len(content)]
-    refs = []
-    for line in section.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("| "):
-            stripped = stripped[2:]
-        refs.append(stripped)
-    return tuple(refs)
+    return tuple(line.strip() for line in section.splitlines() if line.strip())
+
+
+def _extract_refs(content: str) -> tuple[str, ...]:
+    lines = _extract_section(content, _REFS_SECTION_RE)
+    return tuple(line[2:] if line.startswith("| ") else line for line in lines)
+
+
+def _extract_related(content: str) -> tuple[str, ...]:
+    return _extract_section(content, _RELATED_SECTION_RE)
 
 
 def summary_target(word_count: int) -> str:
@@ -265,11 +271,13 @@ def _entry_to_dict(e: DocEntry) -> dict:
         "terms": list(e.terms),
         "summary": e.summary,
         "refs": list(e.refs) if e.refs is not None else None,
+        "related": list(e.related) if e.related is not None else None,
     }
 
 
 def _entry_from_dict(d: dict) -> DocEntry:
     refs = d.get("refs")
+    related = d.get("related")
     return DocEntry(
         rel_path=d["rel_path"],
         title=d["title"],
@@ -278,6 +286,7 @@ def _entry_from_dict(d: dict) -> DocEntry:
         terms=tuple(d.get("terms", [])),
         indexed_at=_parse_indexed_at(d.get("indexed_at")),
         refs=tuple(refs) if refs is not None else None,
+        related=tuple(related) if related is not None else None,
     )
 
 
@@ -378,11 +387,65 @@ def _sanitize_term(term: str) -> tuple[str, str | None]:
     return cleaned, None
 
 
+def _build_slug_index(entries: list[DocEntry]) -> tuple[dict[str, str], list[str]]:
+    from mdc.form import slugify
+    slug_index: dict[str, str] = {}
+    warnings: list[str] = []
+    for e in entries:
+        slug = slugify(e.title)
+        if slug in slug_index:
+            warnings.append(f"Title slug collision: '{slug}' matches both '{slug_index[slug]}' and '{e.rel_path}'")
+        else:
+            slug_index[slug] = e.rel_path
+    return slug_index, warnings
+
+
+def write_related(library_path: Path, entries: list[DocEntry]) -> list[str]:
+    from mdc.form import slugify
+    slug_index, warnings = _build_slug_index(entries)
+    title_by_path = {e.rel_path: e.title for e in entries}
+
+    forward: dict[str, list[str]] = {}
+    for e in entries:
+        if not e.related:
+            continue
+        resolved = []
+        for title in e.related:
+            target = slug_index.get(slugify(title))
+            if target is None:
+                warnings.append(f"## Related in '{e.rel_path}': '{title}' not found in library")
+            else:
+                resolved.append(target)
+        if resolved:
+            forward[e.rel_path] = resolved
+
+    backlinks: dict[str, list[str]] = {}
+    for src, targets in forward.items():
+        for tgt in targets:
+            backlinks.setdefault(tgt, []).append(src)
+
+    all_docs = sorted(set(forward) | set(backlinks))
+    total = sum(len(v) for v in forward.values())
+    lines = ["", "# Related", "", f"{total} cross-reference(s).", ""]
+    for rel_path in all_docs:
+        title = title_by_path.get(rel_path, rel_path)
+        lines.append(f"{_md_escape(rel_path)} — {_md_escape(title)}")
+        for tgt in sorted(forward.get(rel_path, [])):
+            lines.append(f"  → {_md_escape(tgt)} — {_md_escape(title_by_path.get(tgt, tgt))}")
+        for src in sorted(backlinks.get(rel_path, [])):
+            lines.append(f"  ← {_md_escape(src)} — {_md_escape(title_by_path.get(src, src))}")
+        lines.append("")
+        lines.append("---")
+    (library_path / RELATED_FILENAME).write_text("\n".join(lines), encoding="utf-8")
+    return warnings
+
+
 def _finalize(library_path: Path, entries_by_path: dict[str, DocEntry], result: list[DocEntry]) -> list[str]:
     _save_state(library_path, entries_by_path)
     write_manifest(library_path, result, datetime.datetime.now())
     warnings = write_index(library_path, result)
     write_refs(library_path, result)
+    warnings += write_related(library_path, result)
     return warnings
 
 
@@ -407,14 +470,17 @@ def build_index(
             if not md_path.exists():
                 continue
             refs: tuple[str, ...] = ()
+            related: tuple[str, ...] = ()
             if md_path.stat().st_size <= 500_000:
                 content = md_path.read_text(encoding="utf-8", errors="replace")
                 refs = _extract_refs(content)
+                related = _extract_related(content)
             updated = DocEntry(
                 rel_path=existing.rel_path, title=existing.title,
                 word_count=existing.word_count, summary=existing.summary,
                 terms=existing.terms, indexed_at=existing.indexed_at,
                 refs=refs,
+                related=related,
             )
             result.append(updated)
             entries_by_path[rel_path] = updated
@@ -426,24 +492,25 @@ def build_index(
     result = []
 
     for md_path in sorted(library_path.rglob("*.md")):
-        if md_path.name in (MANIFEST_FILENAME, INDEX_FILENAME, KEYS_FILENAME, REFERENCES_FILENAME):
+        if md_path.name in (MANIFEST_FILENAME, INDEX_FILENAME, KEYS_FILENAME, REFERENCES_FILENAME, RELATED_FILENAME):
             continue
         rel_path = str(md_path.relative_to(library_path))
 
         existing = entries_by_path.get(rel_path)
         if existing is not None and md_path.stat().st_mtime <= existing.indexed_at:
-            if existing.refs is not None:
+            if existing.refs is not None and existing.related is not None:
                 result.append(existing)
                 if on_progress:
                     on_progress(rel_path, "cached")
                 continue
-            # One-off: back-fill refs for entries cached before this feature existed.
+            # One-off: back-fill refs/related for entries cached before these fields existed.
             content = md_path.read_text(encoding="utf-8", errors="replace")
             updated = DocEntry(
                 rel_path=existing.rel_path, title=existing.title,
                 word_count=existing.word_count, summary=existing.summary,
                 terms=existing.terms, indexed_at=existing.indexed_at,
-                refs=_extract_refs(content),
+                refs=existing.refs if existing.refs is not None else _extract_refs(content),
+                related=existing.related if existing.related is not None else _extract_related(content),
             )
             result.append(updated)
             entries_by_path[rel_path] = updated
@@ -479,6 +546,7 @@ def build_index(
             rel_path=rel_path, title=title, word_count=wc,
             summary=summary, terms=tuple(terms), indexed_at=now_ts,
             refs=_extract_refs(content),
+            related=_extract_related(content),
         )
         result.append(entry)
         if entry.summary and entry.terms:

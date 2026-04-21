@@ -4,7 +4,20 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 from typing import Final
+import sys
 import tomllib
+
+
+def _platform_dir(xdg_subpath: str, win_fn: str) -> Path:
+    if sys.platform == "win32":
+        import platformdirs
+        return Path(getattr(platformdirs, win_fn)("mdc"))
+    return Path.home() / xdg_subpath / "mdc"
+
+
+_config_dir = _platform_dir(".config", "user_config_dir")
+_state_dir  = _platform_dir(".local/state", "user_state_dir")
+_cache_dir  = _platform_dir(".cache", "user_cache_dir")
 
 
 def _default_assistant_name(model: str) -> str:
@@ -19,8 +32,8 @@ def _default_assistant_name(model: str) -> str:
     return "GPT"
 
 
-DEFAULT_CONFIG_PATH: Final[Path] = Path("~/.config/mdc/config.toml").expanduser()
-DEFAULT_SYSTEM_PROMPT_PATH: Final[Path] = Path("~/.config/mdc/system.md").expanduser()
+DEFAULT_CONFIG_PATH: Final[Path] = _config_dir / "config.toml"
+DEFAULT_SYSTEM_PROMPT_PATH: Final[Path] = _config_dir / "system.md"
 
 _FALLBACK_SYSTEM_PROMPT = (
     "You are continuing a hand-edited markdown chat transcript. "
@@ -39,9 +52,18 @@ class AppConfig:
     index_model: str = "ollama/llama3.2"
 
 
+def _write_default_config(path: Path) -> None:
+    from importlib.resources import files
+    template = files("mdc").joinpath("config.example.toml").read_text(encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(template, encoding="utf-8")
+
+
 def load_config() -> AppConfig:
     config_path = DEFAULT_CONFIG_PATH
     data: dict[str, object] = {}
+    if not config_path.exists():
+        _write_default_config(config_path)
     if config_path.exists():
         with config_path.open("rb") as handle:
             loaded = tomllib.load(handle)

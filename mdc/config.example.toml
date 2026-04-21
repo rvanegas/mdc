@@ -1,0 +1,24 @@
+# System prompt file. If absent, a minimal built-in prompt is used.
+system_prompt_file = "~/.config/mdc/system.md"
+
+# Directory of markdown files to use as a knowledge library.
+# Run "mdc index" to build INDEX.md from these files.
+library_path = "~/notes"
+
+# API keys. Can also be set via environment variables
+# ANTHROPIC_API_KEY and OPENAI_API_KEY.
+anthropic_api_key = "sk-ant-..."
+openai_api_key = "sk-..."
+
+# Ollama endpoint. Default shown.
+ollama_base_url = "http://localhost:11434/v1"
+
+# Model used by "mdc reply". Prefix determines the provider:
+#   claude-*         Anthropic
+#   ollama/<name>    Ollama (local)
+#   anything else    OpenAI
+model = "claude-sonnet-4-6"
+
+# Model used by "mdc index" to summarize library documents.
+# Summary and term count scale automatically with document length.
+index_model = "claude-haiku-4-5"

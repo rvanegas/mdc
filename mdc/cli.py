@@ -68,6 +68,10 @@ def _require_md(path: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from mdc.config import DEFAULT_CONFIG_PATH, _write_default_config
+    if not DEFAULT_CONFIG_PATH.exists():
+        _write_default_config(DEFAULT_CONFIG_PATH)
+
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -756,7 +760,7 @@ def _run_reply_watch(
     config = load_config()
     effective_model = model or config.model
     if not effective_model:
-        print("Error: no model specified. Pass --model or set 'model' in ~/.config/mdc/config.toml.")
+        print("Error: no model specified. Pass --model or set 'model' in config.toml.")
         return 1
     assistant_name = _default_assistant_name(effective_model)
 
@@ -831,7 +835,7 @@ def run_reply(
     config = load_config()
     effective_model = model or config.model
     if not effective_model:
-        print("Error: no model specified. Pass --model or set 'model' in ~/.config/mdc/config.toml.")
+        print("Error: no model specified. Pass --model or set 'model' in config.toml.")
         return 1
     assistant_name = _default_assistant_name(effective_model)
 
