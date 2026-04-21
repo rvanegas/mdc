@@ -218,9 +218,11 @@ def write_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
     (library_path / INDEX_FILENAME).write_text("\n".join(lines), encoding="utf-8")
 
     # Report irrelevant KEYS.md entries.
+    indexed_terms = {t.casefold() for t in inverted}
     warnings: list[str] = []
-    for alias in alias_map:
-        if _normalize_initials(alias).lower() not in raw_terms:
+    for alias, canonical in alias_map.items():
+        if (_normalize_initials(alias).lower() not in raw_terms
+                and canonical.casefold() not in indexed_terms):
             warnings.append(f"KEYS.md ## Alias: alias '{alias}' not found in any document")
     for excl in exclusions:
         if excl.lower() not in raw_terms:
@@ -229,11 +231,19 @@ def write_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
 
 
 def write_refs(library_path: Path, entries: list[DocEntry]) -> None:
-    all_refs = sorted(ref for e in entries for ref in (e.refs or ()))
-    lines = ["", "# References", "", f"{len(all_refs)} reference(s).", ""]
-    for ref in all_refs:
+    inverted: dict[str, list[tuple[str, str]]] = {}
+    for e in entries:
+        for ref in (e.refs or ()):
+            bucket = inverted.setdefault(ref, [])
+            if not any(p == e.rel_path for p, _ in bucket):
+                bucket.append((e.rel_path, e.title))
+    lines = ["", "# References", "", f"{len(inverted)} reference(s).", ""]
+    for ref in sorted(inverted, key=str.casefold):
         lines.append(ref)
-    lines.append("")
+        for rel_path, title in sorted(inverted[ref]):
+            lines.append(f"  {_md_escape(rel_path)} — {_md_escape(title)}")
+        lines.append("")
+        lines.append("---")
     (library_path / REFERENCES_FILENAME).write_text("\n".join(lines), encoding="utf-8")
 
 
