@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import difflib
 import json
 import re
 from collections.abc import Callable
@@ -390,8 +391,14 @@ def _sanitize_term(term: str) -> tuple[str, str | None]:
 def _build_slug_index(entries: list[DocEntry]) -> tuple[dict[str, str], list[str]]:
     from mdc.form import slugify
     slug_index: dict[str, str] = {}
+    title_index: dict[str, str] = {}
     warnings: list[str] = []
     for e in entries:
+        title_key = e.title.casefold()
+        if title_key in title_index:
+            warnings.append(f"Duplicate title: '{e.title}' in '{title_index[title_key]}' and '{e.rel_path}'")
+        else:
+            title_index[title_key] = e.rel_path
         slug = slugify(e.title)
         if slug in slug_index:
             warnings.append(f"Title slug collision: '{slug}' matches both '{slug_index[slug]}' and '{e.rel_path}'")
@@ -573,6 +580,16 @@ def render_manifest(entries: list[DocEntry]) -> str:
     return "\n".join(lines)
 
 
+def resolve_title(library_path: Path, title: str) -> str | None:
+    """Resolve a title (or raw Related line such as '| *Title*') to its rel_path via slug matching."""
+    from mdc.form import slugify
+    target_slug = slugify(title)
+    for e in load_entries(library_path):
+        if slugify(e.title) == target_slug:
+            return e.rel_path
+    return None
+
+
 def lookup_term(library_path: Path, term: str, exclude: str | None = None) -> str:
     """Look up a canonical index term; return matching docs and related terms."""
     if not _TERMS_STATE_PATH.exists():
@@ -590,7 +607,13 @@ def lookup_term(library_path: Path, term: str, exclude: str | None = None) -> st
         term = resolved
     key = next((k for k in term_map if k.casefold() == term.casefold()), None)
     if key is None:
-        return f"Term not found: '{term}'"
+        all_terms = list(term_map.keys())
+        folded_to_orig = {t.casefold(): t for t in all_terms}
+        suggestions = difflib.get_close_matches(term.casefold(), folded_to_orig.keys(), n=5, cutoff=0.5)
+        msg = f"Term not found: '{term}'."
+        if suggestions:
+            msg += " Similar index terms: " + "; ".join(folded_to_orig[s] for s in suggestions)
+        return msg
     lines = [key]
     docs = sorted(term_map[key], key=lambda x: x["rel_path"])
     if exclude:

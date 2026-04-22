@@ -41,6 +41,19 @@ def collect_local_assets(transcript: Transcript, transcript_path: Path) -> dict[
         if assets:
             assets_by_turn[index] = assets
 
+    # Collect assets linked from references and notes, attach to the pending (last human) turn.
+    section_text = "\n".join(list(transcript.references) + list(transcript.notes))
+    pending_index = next(
+        (i for i, t in reversed(list(enumerate(transcript.turns))) if not t.is_assistant),
+        None,
+    )
+    if section_text.strip() and pending_index is not None:
+        existing = assets_by_turn.get(pending_index, ())
+        seen_paths = {a.path for a in existing}
+        section_assets = tuple(_collect_assets_from_text(section_text, base_dir, seen_paths))
+        if section_assets:
+            assets_by_turn[pending_index] = existing + section_assets
+
     return assets_by_turn
 
 
@@ -89,28 +102,29 @@ def build_response_input(
     return messages
 
 
-def _collect_assets_for_turn(turn: Turn, base_dir: Path) -> list[LocalAssetReference]:
-    seen_paths: set[Path] = set()
+def _collect_assets_from_text(text: str, base_dir: Path, seen_paths: set[Path] | None = None) -> list[LocalAssetReference]:
+    if seen_paths is None:
+        seen_paths = set()
     assets: list[LocalAssetReference] = []
-    for match in LINK_RE.finditer(turn.content):
+    for match in LINK_RE.finditer(text):
         raw_target = _normalize_markdown_target(match.group(3))
         if not _is_local_target(raw_target):
             continue
-
         path = _resolve_asset_path(raw_target, base_dir)
         if path in seen_paths:
             continue
-
-        assets.append(
-            LocalAssetReference(
-                label=match.group(2).strip(),
-                raw_target=raw_target,
-                path=path,
-                kind=_classify_asset(path),
-            )
-        )
+        assets.append(LocalAssetReference(
+            label=match.group(2).strip(),
+            raw_target=raw_target,
+            path=path,
+            kind=_classify_asset(path),
+        ))
         seen_paths.add(path)
     return assets
+
+
+def _collect_assets_for_turn(turn: Turn, base_dir: Path) -> list[LocalAssetReference]:
+    return _collect_assets_from_text(turn.content, base_dir)
 
 
 def _normalize_markdown_target(raw_target: str) -> str:

@@ -109,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
                 watch=args.watch,
                 library=args.library,
                 terms=args.terms,
+                strict=args.strict,
             )
         if args.command == "config":
             return run_config()
@@ -254,6 +255,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="TERM",
         help="Pre-look up a library index term and inject results into context. Requires -l. May be repeated.",
+    )
+    reply_parser.add_argument(
+        "--strict",
+        action="store_true",
+        default=False,
+        help="Abort if any library term lookup fails (default: warn and proceed).",
     )
     reply_parser.add_argument("path", help="Path to the markdown transcript.")
 
@@ -834,6 +841,7 @@ def run_reply(
     watch: bool = False,
     library: bool = False,
     terms: list[str] | None = None,
+    strict: bool = False,
 ) -> int:
     if _require_md(path):
         return 1
@@ -868,6 +876,7 @@ def run_reply(
                 status=status,
                 library=library,
                 terms=terms or [],
+                strict=strict,
             )
         except _LibraryTermNotFoundError as exc:
             missing = ", ".join(f'"{t}"' for t in exc.terms)
@@ -916,9 +925,10 @@ def _reply_anthropic(
     status,
     library: bool = False,
     terms: list[str] | None = None,
+    strict: bool = False,
 ) -> str:
     from mdc.anthropic_client import AnthropicChatClient
-    from mdc.library import LIBRARY_TOOLS, get_summary, lookup_term, read_document
+    from mdc.library import LIBRARY_TOOLS, get_summary, lookup_term, read_document, resolve_title
 
     tools = None
     tool_executor = None
@@ -943,6 +953,14 @@ def _reply_anthropic(
             else:
                 preloaded.append(result)
 
+        related_summaries: list[str] = []
+        for raw_title in transcript.related:
+            rel_path = resolve_title(lib, raw_title)
+            if rel_path is None:
+                status(f"! related document not found: \"{raw_title}\"")
+            else:
+                related_summaries.append(get_summary(lib, rel_path, exclude=exclude))
+
         library_tools_prompt = (
             "You have access to a library of the user's own writings. To find relevant material:\n"
             "1. Call lookup_term with a relevant index term. It returns matching documents and related terms.\n"
@@ -950,10 +968,11 @@ def _reply_anthropic(
             "3. Call read_document only when a summary confirms it is worth reading in full.\n"
             "Start by looking up index terms relevant to the user's question."
         )
+        library_context = library_tools_prompt
         if preloaded:
-            library_context = library_tools_prompt + "\n\nPre-looked-up library terms:\n\n" + "\n\n".join(preloaded)
-        else:
-            library_context = library_tools_prompt
+            library_context += "\n\nPre-looked-up library terms:\n\n" + "\n\n".join(preloaded)
+        if related_summaries:
+            library_context += "\n\nPre-loaded summaries for documents related to this transcript:\n\n" + "\n\n".join(related_summaries)
 
         missing_terms: list[str] = []
 
@@ -961,7 +980,7 @@ def _reply_anthropic(
             if tool_name == "lookup_term":
                 term = str(tool_input.get("term", ""))
                 result = lookup_term(lib, term, exclude=exclude)
-                if result.startswith("Term not found"):
+                if "Term not found" in result:
                     status(f"! library term not found: \"{term}\"")
                     missing_terms.append(term)
                 return result
@@ -972,12 +991,18 @@ def _reply_anthropic(
             return f"Unknown tool: {tool_name}"
 
         def post_batch() -> None:
-            if missing_terms:
+            if missing_terms and strict:
                 raise _LibraryTermNotFoundError(list(missing_terms))
+            if missing_terms:
+                terms_list = ", ".join(f'"{t}"' for t in missing_terms)
+                print(f"\nWarning: library term(s) not found: {terms_list}. Update KEYS.md to add aliases.")
 
         status("Library tools active.")
 
     client = AnthropicChatClient(model=model, api_key=config.anthropic_api_key)
+    for assets in collect_local_assets(transcript, path).values():
+        for asset in assets:
+            status(f"Sending asset: {asset.raw_target}")
     system, messages = build_anthropic_input(transcript, config.system_prompt, path, library_context=library_context)
     status(f"Requesting reply from Anthropic model '{model}'...")
     status("Streaming reply:")
