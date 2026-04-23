@@ -114,6 +114,42 @@ An optional `KEYS.md` in the library directory controls term canonicalization wi
 - **Co-occurrence supplementation** — after the AI pass, term pairs that co-occur as document tags in at least 2 documents are automatically added as related; this catches corpus-specific clustering the model might miss by reasoning from general knowledge rather than the actual library
 - **KEYS.md Alias** — terms aliased to a canonical are resolved before lookup, so a query for an alias navigates to the canonical's relations transparently
 
+## Writing Assistant
+
+MDC supports a document-editing workflow where the AI reads and rewrites the user's own files rather than just appending replies to the transcript.
+
+### Setup
+
+1. Create a writing session with `mdc new "My Essay" -e`. This produces two files:
+   - `YYYY-MM-DD-my-essay.md` — the document being written/edited
+   - `YYYY-MM-DD-my-essay-editor.md` — the transcript file that drives `mdc reply`
+
+2. The editor file contains `[Edit: YYYY-MM-DD-my-essay.md]` in its preamble. `mdc reply` reads this line, loads the target document into the system prompt, and gives the model an `edit_file` tool.
+
+### How it works
+
+- `resolve_edit_targets` (`edit_tools.py`) reads `[Edit: path]` lines from the transcript preamble and resolves them to absolute paths.
+- `build_edit_context` injects the target files into the system prompt between `--- filename ---` fences, preceded by editing instructions.
+- `make_edit_executor` returns a tool executor for the `edit_file` tool. The tool takes `path`, `old_str`, and `new_str`; the executor does an exact-string replacement and rewrites the file.
+- Before the first edit to a file, a numbered backup is saved automatically (`stem--1.ext`, `stem--2.ext`, …).
+- After each edit the tool returns a unified diff, which the model uses to confirm what changed.
+- `mdc diff <editor-file>` shows the diff between the current document and its most recent backup.
+
+### Paragraph wrapping
+
+Edited content is reflowed via `wrap_paragraphs` at `config.wrap_width` (default 80). Code blocks and lines beginning with `|` (tables/references) are passed through unchanged.
+
+### VOICE labels
+
+When a document is indexed for the library, each section is annotated with a `[VOICE: ...]` label:
+
+- `[VOICE: user]` — direct words of the user
+- `[VOICE: llm — collaborative elaboration, implicitly endorsed unless contradicted]` — AI-generated reply sections
+- `[VOICE: third-party]` — external sources or quoted voices
+- `[VOICE: this entire document is the user's own writing]` — plain documents with no transcript structure
+
+These labels are stripped before sending to the model during `reply` but are present in library context so the model can reason about authorship.
+
 ## Configuration
 
 Users create `~/.config/mdc/config.toml`:

@@ -132,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
                 reprocess_all=args.all,
             )
         if args.command == "new":
-            return run_new(args.title)
+            return run_new(args.title, edit=args.edit)
         if args.command == "check":
             return run_check(Path(args.path))
         if args.command == "validate":
@@ -217,6 +217,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create a new mdform conversation file in the current directory.",
     )
     new_parser.add_argument("title", help="Title of the conversation.")
+    new_parser.add_argument(
+        "-e", "--edit",
+        action="store_true",
+        help="Also create an editor file with '(Editor)' appended to the title.",
+    )
 
     # check
     check_parser = subparsers.add_parser(
@@ -784,15 +789,28 @@ def _parse_relate_reply(
     return result
 
 
-def run_new(title: str) -> int:
+def run_new(title: str, edit: bool = False) -> int:
     today = datetime.date.today().isoformat()
     filename = f"{today}-{slugify(title)}.md"
     path = Path(filename)
     if path.exists():
         print(f"Error: '{filename}' already exists.")
         return 1
+    if edit:
+        editor_title = f"{title} (Editor)"
+        editor_filename = f"{today}-{slugify(editor_title)}.md"
+        editor_path = Path(editor_filename)
+        if editor_path.exists():
+            print(f"Error: '{editor_filename}' already exists.")
+            return 1
     path.write_text(f"\n# {title}\n{today}\n\n## Prompt\n\n", encoding="utf-8")
     print(filename)
+    if edit:
+        editor_path.write_text(
+            f"\n# {editor_title}\n{today}\n\n[Edit: {filename}]\n\n## Prompt\n\n",
+            encoding="utf-8",
+        )
+        print(editor_filename)
     return 0
 
 
