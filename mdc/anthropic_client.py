@@ -122,7 +122,7 @@ class AnthropicChatClient:
             tool_results = []
             for tu in tool_uses:
                 if on_delta is not None:
-                    on_delta(f"\n[{tu.name}: {tu.input}]\n")
+                    on_delta(f"\n[{tu.name}]\n")
                 result = tool_executor(tu.name, dict(tu.input))
                 tool_results.append({
                     "type": "tool_result",

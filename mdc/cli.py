@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import difflib
+import os
 import re
 import shutil
 import subprocess
@@ -818,7 +819,8 @@ def run_new(title: str | None, edit: bool = False) -> int:
         if editor_path.exists():
             print(f"Error: '{editor_filename}' already exists.")
             return 1
-    path.write_text(f"\n# {title}\n{today}\n\n## Prompt\n\n", encoding="utf-8")
+    doc_content = f"\n# {title}\n{today}\n\n" if edit else f"\n# {title}\n{today}\n\n## Prompt\n\n"
+    path.write_text(doc_content, encoding="utf-8")
     print(filename)
     if edit:
         editor_path.write_text(
@@ -826,6 +828,10 @@ def run_new(title: str | None, edit: bool = False) -> int:
             encoding="utf-8",
         )
         print(editor_filename)
+    editor_cmd = os.environ.get("EDITOR")
+    if editor_cmd:
+        files = [str(editor_path), filename] if edit else [filename]
+        subprocess.run([editor_cmd] + files)
     return 0
 
 
@@ -1216,8 +1222,8 @@ def _reply_anthropic(
 
     edit_targets = resolve_edit_targets(transcript.preamble)
     if edit_targets:
-        edit_exec = make_edit_executor(edit_targets, wrap_width=config.wrap_width)
-        edit_context = build_edit_context(edit_targets)
+        edit_exec = make_edit_executor(edit_targets)
+        edit_context = build_edit_context(edit_targets, wrap_width=config.wrap_width)
         tools = (tools or []) + [EDIT_TOOL]
         prev_exec = tool_executor
         def tool_executor(name: str, inp: dict[str, object]) -> str:  # noqa: E306

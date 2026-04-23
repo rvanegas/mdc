@@ -3,6 +3,7 @@ from __future__ import annotations
 import difflib
 import re
 import shutil
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -50,11 +51,21 @@ def resolve_edit_targets(preamble: Preamble) -> list[Path]:
     return targets
 
 
-def build_edit_context(targets: list[Path]) -> str:
-    """Build the file-content block injected into the system prompt."""
+def build_edit_context(targets: list[Path], wrap_width: int = 100) -> str:
+    """Build the file-content block injected into the system prompt.
+
+    Wraps each target before sending to the model. If wrapping changes the
+    content, saves a backup and writes the wrapped version to disk first so
+    that subsequent edit diffs are against the already-wrapped text.
+    """
+    from mdc.cli import wrap_paragraphs
     parts = [_EDIT_INSTRUCTIONS, ""]
     for t in targets:
-        content = t.read_text(encoding="utf-8")
+        raw = t.read_text(encoding="utf-8")
+        content = wrap_paragraphs(raw, width=wrap_width)
+        if content != raw:
+            _save_backup(t)
+            t.write_text(content, encoding="utf-8")
         parts.append(f"--- {t.name} ---")
         parts.append(content.rstrip())
         parts.append(f"--- end {t.name} ---")
@@ -91,12 +102,10 @@ def _make_diff(old_text: str, new_text: str, name: str) -> str:
     return "".join(lines) if lines else "(no changes)"
 
 
-def make_edit_executor(targets: list[Path], wrap_width: int = 100) -> Callable[[str, dict[str, object]], str]:
+def make_edit_executor(targets: list[Path]) -> Callable[[str, dict[str, object]], str]:
     """Return a tool_executor that handles edit_file calls for the given targets."""
     allowed = {t.resolve(): t for t in targets}
-    # Also index by name for the path the AI provides (relative string)
     by_name = {t.name: t for t in targets}
-    backed_up: set[Path] = set()
 
     def executor(tool_name: str, tool_input: dict[str, object]) -> str:
         if tool_name != "edit_file":
@@ -106,12 +115,8 @@ def make_edit_executor(targets: list[Path], wrap_width: int = 100) -> Callable[[
         old_str = str(tool_input.get("old_str", ""))
         new_str = str(tool_input.get("new_str", ""))
 
-        # Resolve the path the AI provided
         candidate = Path(raw_path)
-        if candidate.is_absolute():
-            resolved = candidate.resolve()
-        else:
-            resolved = candidate.resolve()
+        resolved = candidate.resolve()
 
         target = allowed.get(resolved) or by_name.get(candidate.name)
         if target is None:
@@ -121,12 +126,12 @@ def make_edit_executor(targets: list[Path], wrap_width: int = 100) -> Callable[[
         if old_str not in current:
             return f"Error: old_str not found in {target.name}. No changes made."
 
-        from mdc.cli import wrap_paragraphs
-        new_content = wrap_paragraphs(current.replace(old_str, new_str, 1), width=wrap_width)
-        if target not in backed_up:
-            _save_backup(target)
-            backed_up.add(target)
+        new_content = current.replace(old_str, new_str, 1)
+        _save_backup(target)
         target.write_text(new_content, encoding="utf-8")
-        return _make_diff(current, new_content, target.name)
+        diff = _make_diff(current, new_content, target.name)
+        sys.stdout.write(diff + "\n")
+        sys.stdout.flush()
+        return diff
 
     return executor
