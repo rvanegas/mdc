@@ -14,6 +14,7 @@ _NEXT_HEADING_RE = re.compile(rf"^{_H} ", re.MULTILINE)
 ASSISTANT_NAME = "Claude"  # default for mdform-format transcripts
 REFERENCE_LINE_RE = re.compile(r"^\| .+\([^)]+\).+$")
 _REF_TITLE_SPLIT_RE = re.compile(r"(\([^)]+\)\s+)")
+EDIT_DIRECTIVE_RE = re.compile(r"^\[Edit:\s*([^\]]+)\]\s*$", re.MULTILINE)
 
 
 def _normalize_ref(ref: str) -> str:
@@ -45,6 +46,7 @@ class Preamble:
     title: str
     date: str    # "yyyy-mm-dd"
     raw: str
+    edit_targets: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -97,7 +99,8 @@ def _parse_preamble(text: str) -> Preamble:
         raise TranscriptError(
             f"Expected blank line after date on line 4, got {lines[3]!r}."
         )
-    return Preamble(title=title, date=date_str, raw=text)
+    edit_targets = tuple(m.group(1).strip() for m in EDIT_DIRECTIVE_RE.finditer(text))
+    return Preamble(title=title, date=date_str, raw=text, edit_targets=edit_targets)
 
 
 def parse_transcript(text: str, assistant_name: str = ASSISTANT_NAME) -> Transcript:

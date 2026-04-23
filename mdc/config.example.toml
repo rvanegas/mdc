@@ -21,3 +21,6 @@ model = "claude-sonnet-4-6"
 
 # Model used by "mdc index" to summarize library documents. Default: claude-haiku-4-5.
 # index_model = "claude-haiku-4-5"
+
+# Column width for paragraph wrapping applied by "mdc fix" and "mdc reply". Default: 100.
+# wrap_width = 100

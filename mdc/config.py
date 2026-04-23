@@ -60,6 +60,7 @@ class AppConfig:
     index_model: str = "claude-haiku-4-5"
     user_names: tuple[str, ...] = ("Prompt", "Rodrigo")
     llm_names: tuple[str, ...] = ("Claude", "GPT")
+    wrap_width: int = 100
 
 
 def _write_default_config(path: Path) -> None:
@@ -100,6 +101,7 @@ def load_config() -> AppConfig:
 
     user_names = tuple(str(n).strip() for n in data.get("user_names", ["Prompt", "Rodrigo"]) if str(n).strip())
     llm_names  = tuple(str(n).strip() for n in data.get("llm_names",  ["Claude", "GPT"])     if str(n).strip())
+    wrap_width = int(data.get("wrap_width", 100))
 
     return AppConfig(
         model=model,
@@ -111,6 +113,7 @@ def load_config() -> AppConfig:
         index_model=index_model,
         user_names=user_names,
         llm_names=llm_names,
+        wrap_width=wrap_width,
     )
 
 

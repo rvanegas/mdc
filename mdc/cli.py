@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import textwrap
 import time
 from pathlib import Path
 
@@ -69,6 +70,50 @@ def _require_md(path: Path) -> int:
     return 0
 
 
+_SPECIAL_LINE_RE = re.compile(
+    r"^(?:#|[-*+] |\d+\. |\| |    |\t|[-*_]{3,}\s*$)"
+)
+
+
+def wrap_paragraphs(text: str, width: int = 100) -> str:
+    """Wrap prose paragraphs at `width` columns; leave code fences, headings, lists, refs untouched."""
+    lines = text.split("\n")
+    result: list[str] = []
+    in_code = False
+    para: list[str] = []
+
+    def flush() -> None:
+        if para:
+            if all(l.startswith("> ") for l in para):
+                inner = " ".join(l[2:].rstrip() for l in para)
+                wrapped = textwrap.fill(inner, width=max(1, width - 2), break_long_words=False, break_on_hyphens=False)
+                result.extend("> " + l for l in wrapped.split("\n"))
+            else:
+                joined = " ".join(l.rstrip() for l in para)
+                result.extend(textwrap.fill(joined, width=width, break_long_words=False, break_on_hyphens=False).split("\n"))
+            para.clear()
+
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            flush()
+            in_code = not in_code
+            result.append(line)
+            continue
+        if in_code or not line.strip():
+            flush()
+            result.append(line)
+            continue
+        if _SPECIAL_LINE_RE.match(line):
+            flush()
+            result.append(line)
+            continue
+        para.append(line)
+
+    flush()
+    return "\n".join(result)
+
+
 def main(argv: list[str] | None = None) -> int:
     from mdc.config import DEFAULT_CONFIG_PATH, DEFAULT_SYSTEM_PROMPT_PATH, _write_default_config, _write_default_system_prompt
     if not DEFAULT_CONFIG_PATH.exists():
@@ -108,6 +153,11 @@ def main(argv: list[str] | None = None) -> int:
                 terms=args.terms,
                 strict=args.strict,
             )
+        if args.command == "diff":
+            extra = args.diff_args or []
+            if extra and extra[0] == "--":
+                extra = extra[1:]
+            return run_diff(Path(args.path), diff_args=extra or None)
         if args.command == "config":
             return run_config()
         if args.command == "pdf":
@@ -258,6 +308,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pdf_parser.add_argument("path", help="Path to the markdown file.")
 
+    # diff
+    diff_parser = subparsers.add_parser(
+        "diff",
+        help="Show changes made to a file by the last mdc reply edit.",
+    )
+    diff_parser.add_argument("path", help="Path to the edited file.")
+    diff_parser.add_argument(
+        "diff_args",
+        nargs=argparse.REMAINDER,
+        help=argparse.SUPPRESS,
+    )
+
     # config
     subparsers.add_parser(
         "config",
@@ -274,6 +336,68 @@ def run_config() -> int:
     print(f"State dir:     {_state_dir}")
     print(f"Cache dir:     {_cache_dir}")
     return 0
+
+
+def _colorize_diff(text: str) -> str:
+    RESET  = "\033[0m"
+    BOLD   = "\033[1m"
+    RED    = "\033[31m"
+    GREEN  = "\033[32m"
+    CYAN   = "\033[36m"
+    out = []
+    for line in text.splitlines(keepends=True):
+        if line.startswith("---") or line.startswith("+++"):
+            out.append(BOLD + line + RESET)
+        elif line.startswith("-"):
+            out.append(RED + line + RESET)
+        elif line.startswith("+"):
+            out.append(GREEN + line + RESET)
+        elif line.startswith("@@"):
+            out.append(CYAN + line + RESET)
+        else:
+            out.append(line)
+    return "".join(out)
+
+
+def run_diff(path: Path, diff_args: list[str] | None = None) -> int:
+    import re as _re
+    import subprocess
+    import sys
+
+    path = path.resolve()
+    if not path.is_file():
+        print(f"Error: file not found: {path}")
+        return 1
+
+    stem = path.stem
+    suffix = path.suffix
+    parent = path.parent
+
+    backup_re = _re.compile(rf"^{_re.escape(stem)}--(\d+){_re.escape(suffix)}$")
+    highest_n = 0
+    backup: Path | None = None
+    for sibling in parent.iterdir():
+        m = backup_re.match(sibling.name)
+        if m:
+            n = int(m.group(1))
+            if n > highest_n:
+                highest_n = n
+                backup = sibling
+
+    if backup is None:
+        print(f"No backup found for {path.name}. Has 'mdc reply' edited this file yet?")
+        return 1
+
+    cmd = ["diff", "-u"] + (diff_args or []) + [str(backup), str(path)]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    output = result.stdout
+    if sys.stdout.isatty() and output:
+        output = _colorize_diff(output)
+    if output:
+        sys.stdout.write(output)
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+    return 0 if result.returncode in (0, 1) else result.returncode
 
 
 def _annotate_voice(
@@ -738,10 +862,10 @@ def run_fix(paths: list[Path]) -> int:
         orc_lines, orc_applied = fix_object_replacement(raw.split("\n"))
         rtl_lines, rtl_applied = fix_rtl_spans(orc_lines)
         new_lines, title_applied = fix_title_section(rtl_lines)
+        new_text = "\n".join(new_lines)
         applied = orc_applied + rtl_applied + title_applied
 
         if applied:
-            new_text = "\n".join(new_lines)
             diff = list(difflib.unified_diff(
                 raw.splitlines(keepends=True),
                 new_text.splitlines(keepends=True),
@@ -1054,6 +1178,22 @@ def _reply_anthropic(
                 print(f"\nWarning: library term(s) not found: {terms_list}. Update KEYS.md to add aliases.")
 
         status("Library tools active.")
+
+    from mdc.edit_tools import EDIT_TOOL, build_edit_context, make_edit_executor, resolve_edit_targets
+
+    edit_targets = resolve_edit_targets(transcript.preamble)
+    if edit_targets:
+        edit_exec = make_edit_executor(edit_targets, wrap_width=config.wrap_width)
+        edit_context = build_edit_context(edit_targets)
+        tools = (tools or []) + [EDIT_TOOL]
+        prev_exec = tool_executor
+        def tool_executor(name: str, inp: dict[str, object]) -> str:  # noqa: E306
+            if name == "edit_file":
+                return edit_exec(name, inp)
+            return prev_exec(name, inp) if prev_exec else f"Unknown tool: {name}"
+        library_context = (library_context or "") + ("\n\n" if library_context else "") + edit_context
+        for t in edit_targets:
+            status(f"Edit target: {t.name}")
 
     client = AnthropicChatClient(model=model, api_key=config.anthropic_api_key)
     for assets in collect_local_assets(transcript, path).values():
