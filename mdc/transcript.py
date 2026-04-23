@@ -274,6 +274,68 @@ def insert_references(existing: list[str], new_refs: list[str]) -> list[str]:
     return result
 
 
+def extract_related(reply: str) -> tuple[str, list[str]]:
+    """Extract the ## Related section from a reply, returning (body, titles).
+
+    Titles are raw lines such as '| *Title*'. The section is removed from body.
+    """
+    match = _RELATED_HEADING_RE.search(reply)
+    if not match:
+        return reply, []
+
+    section_start = match.start()
+    after_heading = reply[match.end():]
+    next_heading = _NEXT_HEADING_RE.search(after_heading)
+    if next_heading:
+        content = after_heading[:next_heading.start()]
+        tail = reply[match.end() + next_heading.start():]
+    else:
+        content = after_heading
+        tail = ""
+
+    titles = [line.strip() for line in content.splitlines() if line.strip().startswith("| ")]
+
+    before = reply[:section_start].rstrip()
+    if tail.strip():
+        body = before + "\n\n" + tail.lstrip("\n")
+    else:
+        body = before
+
+    return body, titles
+
+
+def update_related_section(text: str, titles: list[str]) -> str:
+    """Replace (or insert before ## References) the ## Related section."""
+    related_heading = _RELATED_HEADING_RE.search(text)
+
+    if related_heading:
+        heading_marker = related_heading.group(1)
+        section_start = related_heading.start()
+        after_heading = text[related_heading.end():]
+        next_heading = _NEXT_HEADING_RE.search(after_heading)
+        if next_heading:
+            section_end = related_heading.end() + next_heading.start()
+        else:
+            section_end = len(text)
+        before = text[:section_start].rstrip()
+        tail = text[section_end:]
+        content = "\n".join(titles)
+        rebuilt = f"{heading_marker} Related\n\n{content}"
+        if tail.strip():
+            return (before + "\n\n" if before else "") + rebuilt + "\n\n" + tail.lstrip("\n")
+        return (before + "\n\n" if before else "") + rebuilt + "\n"
+
+    heading_marker = "##"
+    content = "\n".join(titles)
+    refs_match = _REFS_HEADING_RE.search(text)
+    if refs_match:
+        before = text[:refs_match.start()].rstrip()
+        tail = text[refs_match.start():]
+        return f"{before}\n\n{heading_marker} Related\n\n{content}\n\n{tail}"
+    base = text.rstrip()
+    return f"{base}\n\n{heading_marker} Related\n\n{content}\n"
+
+
 def update_references_section(text: str, refs: list[str]) -> str:
     """Replace (or append) the ## References section with the given refs list."""
     refs_heading = _REFS_HEADING_RE.search(text)

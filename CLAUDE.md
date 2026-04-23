@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-**MDC** is a CLI tool for managing hand-edited markdown conversation files in the "mdform" format — structured transcripts of AI conversations (Claude, GPT, Ollama). It validates, fixes, and extends these files by appending AI replies.
+**MDC** is a CLI tool for managing hand-edited markdown conversation files — structured transcripts of AI conversations (Claude, GPT, Ollama). It validates, fixes, and extends these files by appending AI replies.
+
+## Development Philosophy
+
+No backwards compatibility in code — deprecation shims, compatibility flags, and legacy fallbacks are not welcome. If something changes, change it completely. Data migrations are still required when existing files would otherwise break.
 
 ## Development Setup
 
@@ -30,7 +34,7 @@ The tool has two main pipelines: **CLI → Transcript parsing → Format validat
 
 - **`cli.py`** — 7 subcommands: `index`, `new`, `check`, `validate`, `fix`, `reply`, `pdf`
 - **`transcript.py`** — Core parsing: splits markdown into preamble + conversational turns, detects pending human turns awaiting reply, manages reference sections
-- **`form.py`** — Enforces the 12-rule mdform format (blank lines, headers, speaker labels, reference formatting, filename derivation)
+- **`form.py`** — Enforces the 12-rule transcript format (blank lines, headers, speaker labels, reference formatting, filename derivation)
 - **`assets.py`** — Collects local file references from markdown links, validates paths stay within the transcript directory, builds API-specific inputs with caching directives
 - **`config.py`** — Loads `~/.config/mdc/config.toml`; also reads `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env vars
 - **`library.py`** — Library indexing: scans a directory of markdown documents, generates AI summaries and index terms, writes `MANIFEST.md` and `INDEX.md`, reads `KEYS.md` for term canonicalization
@@ -53,7 +57,7 @@ The tool has two main pipelines: **CLI → Transcript parsing → Format validat
 - **OpenAI asset uploads** — files are cached by ID with expiry tracking; client auto-retries with fresh uploads on cache miss
 - **Heading promotion** — `##` headings in replies are automatically promoted to `###` to avoid conflicts with the transcript structure
 
-## Mdform Format
+## Transcript Format
 
 Files must satisfy 12 rules enforced by `form.py`:
 1. Blank first line
@@ -101,6 +105,14 @@ An optional `KEYS.md` in the library directory controls term canonicalization wi
 - **`## Alias`** — groups of aliases mapping to a canonical: the canonical is a bare line, aliases are `- alias` bullets beneath it
 - **`## Exclude`** — terms to suppress from the index entirely
 - **`## Group`** — hierarchical grouping: a parent term followed by `- subterm` bullets; subterms appear nested under the parent in `INDEX.md`
+
+### Semantic relations
+
+`mdc relate` builds a relations map between index terms, used by `lookup_term` to suggest adjacent terms during `mdc reply -l`. Several tactics combine to produce it:
+
+- **AI semantic pass** — the model is shown all terms and asked to identify related ones per batch; inclusion criteria cover same-concept-different-angle, broader/narrower forms, frequent co-occurrence in the literature, and morphological variants of the same root
+- **Co-occurrence supplementation** — after the AI pass, term pairs that co-occur as document tags in at least 2 documents are automatically added as related; this catches corpus-specific clustering the model might miss by reasoning from general knowledge rather than the actual library
+- **KEYS.md Alias** — terms aliased to a canonical are resolved before lookup, so a query for an alias navigates to the canonical's relations transparently
 
 ## Configuration
 

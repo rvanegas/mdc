@@ -111,13 +111,9 @@ _NAME_ARTICLE = r"(?:van|von|de|del|den|der|di|du|la|le|ten|ter)\s+"
 _NAME = rf"(?:{_NAME_ARTICLE})?(?:{_NAME_TOKEN})(?:\s+{_NAME_TOKEN})*"
 
 
-def _validate_reference(line: str) -> tuple[str | None, str | None]:
+def _validate_reference(line: str) -> str | None:
     """
-    Return (error, warning) for the reference line; either may be None.
-
-    Warnings (flagged but not errors):
-      - title not in italics
-      - author name not in 'Last, First' format (likely not surname-first)
+    Return an error string or None.
 
     Expected shapes:
       Last, First (year) *Title*
@@ -129,35 +125,35 @@ def _validate_reference(line: str) -> tuple[str | None, str | None]:
     year_m = re.search(rf"\(c\.?\s*{_yr}(?:\s*BCE)?\)", line) or \
              re.search(rf"\({_yr}(?:\s*BCE)?\)", line)
     if not year_m:
-        return (None, "missing year in parentheses — expected e.g. (1989), (c. 350 BCE), (c. 53-55), or (1781/1787)")
+        return "missing year in parentheses — expected e.g. (1989), (c. 350 BCE), (c. 53-55), or (1781/1787)"
 
     # ── italic title ──────────────────────────────────────────────────
     after_year = line[year_m.end():].strip()
     if not re.match(r"^\*[^*]+\*", after_year):
-        return (None, "title is not in italics — expected *Title*")
+        return "title is not in italics — expected *Title*"
 
     # ── author block ──────────────────────────────────────────────────
     author_block = line[: year_m.start()].strip()
     if not author_block:
-        return ("missing author", None)
+        return "missing author"
 
     comma_idx = author_block.find(",")
     if comma_idx == -1:
         # Allow mononyms (Aristotle, Plato, Avicenna, …)
         if not re.match(rf"^{_NAME_TOKEN}$", author_block):
-            return (None, "author name not in 'Last, First' format — may not be surname-first")
+            return "author name not in 'Last, First' format — may not be surname-first"
     else:
         last_name = author_block[:comma_idx].strip()
         if not re.match(rf"^{_NAME}$", last_name):
-            return (f"last name '{last_name}' is not a properly capitalised name", None)
+            return f"last name '{last_name}' is not a properly capitalised name"
 
         rest = author_block[comma_idx + 1:].strip()
         if not rest:
-            return ("missing first name for first author", None)
+            return "missing first name for first author"
         if not re.match(r"^[A-Z]", rest):
-            return (f"first name should start with a capital letter, got: '{rest[:30]}'", None)
+            return f"first name should start with a capital letter, got: '{rest[:30]}'"
 
-    return (None, None)
+    return None
 
 
 # ── title-section fixer ───────────────────────────────────────────────────────
@@ -233,9 +229,8 @@ def fix_title_section(lines: list[str]) -> tuple[list[str], list[str]]:
 
 # ── checker ───────────────────────────────────────────────────────────────────
 
-def check_file(path: Path) -> tuple[list[str], list[str]]:
+def check_file(path: Path) -> list[str]:
     errors: list[str] = []
-    warnings: list[str] = []
 
     try:
         raw = path.read_text(encoding="utf-8")
@@ -253,8 +248,6 @@ def check_file(path: Path) -> tuple[list[str], list[str]]:
     def err(lineno: int, msg: str) -> None:  # lineno is 1-based
         errors.append(f"line {lineno}: {msg}")
 
-    def warn(lineno: int, msg: str) -> None:  # lineno is 1-based
-        warnings.append(f"line {lineno}: {msg}")
 
     # ── object replacement character (whole-file scan) ────────────────
     for i, line in enumerate(lines):
@@ -275,24 +268,24 @@ def check_file(path: Path) -> tuple[list[str], list[str]]:
     # ── 1. blank first line ───────────────────────────────────────────
     if n < 1 or lines[0].strip() != "":
         err(1, f"expected blank line, got {lines[0]!r}")
-        return errors, warnings
+        return errors
 
     # ── 2. first-level header ─────────────────────────────────────────
     title: str | None = None
     if n < 2 or not re.match(r"^# .+", lines[1]):
         err(2, f"expected '# Title', got {lines[1]!r}")
-        return errors, warnings
+        return errors
     title = lines[1][2:].strip()
 
     # ── 3. date line ──────────────────────────────────────────────────
     date_str: str | None = None
     if n < 3:
         err(3, "expected date line 'yyyy-mm-dd'")
-        return errors, warnings
+        return errors
     m = re.match(r"^(\d{4}-\d{2}-\d{2})$", lines[2])
     if not m:
         err(3, f"expected 'yyyy-mm-dd', got {lines[2]!r}")
-        return errors, warnings
+        return errors
     date_str = m.group(1)
 
     # ── 4. filename ───────────────────────────────────────────────────
@@ -300,12 +293,12 @@ def check_file(path: Path) -> tuple[list[str], list[str]]:
     actual = path.name
     if actual != expected:
         errors.append(f"filename: expected '{expected}', got '{actual}'")
-        return errors, warnings
+        return errors
 
     # ── 5. blank line after date ──────────────────────────────────────
     if n < 4 or lines[3].strip() != "":
         err(4, f"expected blank line after date, got {lines[3]!r}")
-        return errors, warnings
+        return errors
 
     # ── locate section headers ────────────────────────────────────────
     sections: list[tuple[int, str]] = []   # (0-based index, raw line)
@@ -315,20 +308,20 @@ def check_file(path: Path) -> tuple[list[str], list[str]]:
 
     if not sections:
         errors.append("no sections found (expected '## ...' headers)")
-        return errors, warnings
+        return errors
 
     # ── 6. each header has non-empty content ─────────────────────────
     for idx, header in sections:
         content = header[3:].strip()
         if not content:
             err(idx + 1, "section header has no text after '##'")
-            return errors, warnings
+            return errors
 
     # ── 7. flag legacy '## ChatGPT' label ────────────────────────────
     for idx, header in sections:
         if header[3:].strip() == "ChatGPT":
             err(idx + 1, "'## ChatGPT': use '## GPT' instead")
-            return errors, warnings
+            return errors
 
     # ── 9. blank line immediately after each ## header ────────────────
     for idx, header in sections:
@@ -339,7 +332,7 @@ def check_file(path: Path) -> tuple[list[str], list[str]]:
                 idx + 2,
                 f"expected blank line after '## ...' header, got {got}",
             )
-            return errors, warnings
+            return errors
 
     # ── 9b. blank line before each section (except the first) ─────────
     for idx, header in sections[1:]:
@@ -350,7 +343,7 @@ def check_file(path: Path) -> tuple[list[str], list[str]]:
                 idx,  # 1-based: the line before the header
                 f"expected blank line before '## {header[3:].strip()}', got {got}",
             )
-            return errors, warnings
+            return errors
 
     # ── 10. Notes/Related/References ordering and position ───────────
     # Required tail order (all optional): Notes → Related → References
@@ -362,14 +355,14 @@ def check_file(path: Path) -> tuple[list[str], list[str]]:
     if refs_si is not None and refs_si != len(sections) - 1:
         idx, _ = sections[refs_si]
         err(idx + 1, "'## References' must be the final section but appears before other sections")
-        return errors, warnings
+        return errors
 
     if related_si is not None:
         expected = len(sections) - 1 if refs_si is None else refs_si - 1
         if related_si != expected:
             idx, _ = sections[related_si]
             err(idx + 1, "'## Related' must appear just before '## References' (or at the end if no References section)")
-            return errors, warnings
+            return errors
 
     if notes_si is not None:
         if related_si is not None:
@@ -381,7 +374,7 @@ def check_file(path: Path) -> tuple[list[str], list[str]]:
         if notes_si != expected:
             idx, _ = sections[notes_si]
             err(idx + 1, "'## Notes' must appear just before '## Related' or '## References' (or at the end if neither is present)")
-            return errors, warnings
+            return errors
 
     # ── 11/12. validate reference lines ──────────────────────────────
     if refs_si is not None:
@@ -398,14 +391,11 @@ def check_file(path: Path) -> tuple[list[str], list[str]]:
             if stripped == "":
                 continue
             if not stripped.startswith("| "):
-                warn(i + 1, f"reference must start with '| ': {stripped!r}")
+                err(i + 1, f"reference must start with '| ': {stripped!r}")
                 continue
-            ref_err, ref_warn = _validate_reference(stripped[2:])
+            ref_err = _validate_reference(stripped[2:])
             if ref_err:
                 err(i + 1, f"reference — {ref_err}: {stripped!r}")
-                return errors, warnings
-            if ref_warn:
-                warn(i + 1, f"reference — {ref_warn}: {stripped!r}")
 
     # ── validate Notes lines ──────────────────────────────────────────
     if notes_si is not None:
@@ -425,11 +415,11 @@ def check_file(path: Path) -> tuple[list[str], list[str]]:
             m = re.match(r"^\| \[(\d+)\] .+$", stripped)
             if not m:
                 err(i + 1, f"note line must be '| [n] Text': {stripped!r}")
-                return errors, warnings
+                return errors
             actual_n = int(m.group(1))
             if actual_n != expected_n:
                 err(i + 1, f"note numbers must be consecutive starting from 1: expected [{expected_n}], got [{actual_n}]")
-                return errors, warnings
+                return errors
             expected_n += 1
 
     # ── validate Related lines ────────────────────────────────────────
@@ -448,6 +438,6 @@ def check_file(path: Path) -> tuple[list[str], list[str]]:
                 continue
             if not stripped.startswith("| "):
                 err(i + 1, f"related line must start with '| ': {stripped!r}")
-                return errors, warnings
+                return errors
 
-    return errors, warnings
+    return errors

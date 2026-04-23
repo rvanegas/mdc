@@ -325,6 +325,25 @@ def load_entries(library_path: Path) -> list[DocEntry]:
     return list(_load_state(library_path).values())
 
 
+def cooccurrence_relations(library_path: Path, min_count: int = 2) -> dict[str, list[str]]:
+    """Return term pairs that co-occur in at least min_count documents."""
+    entries = load_entries(library_path)
+    from collections import defaultdict
+    cooc: dict[tuple[str, str], int] = defaultdict(int)
+    for entry in entries:
+        terms = list(entry.terms)
+        for i in range(len(terms)):
+            for j in range(i + 1, len(terms)):
+                pair = (min(terms[i], terms[j]), max(terms[i], terms[j]))
+                cooc[pair] += 1
+    result: dict[str, list[str]] = defaultdict(list)
+    for (a, b), count in cooc.items():
+        if count >= min_count:
+            result[a].append(b)
+            result[b].append(a)
+    return dict(result)
+
+
 def load_terms(library_path: Path) -> set[str]:
     """Load the set of term keys from the terms JSON state file."""
     if not _TERMS_STATE_PATH.exists():
@@ -614,6 +633,7 @@ def lookup_term(library_path: Path, term: str, exclude: str | None = None) -> st
         if suggestions:
             msg += " Similar index terms: " + "; ".join(folded_to_orig[s] for s in suggestions)
         return msg
+    entries = _load_state(library_path)
     lines = [key]
     docs = sorted(term_map[key], key=lambda x: x["rel_path"])
     if exclude:
@@ -621,7 +641,13 @@ def lookup_term(library_path: Path, term: str, exclude: str | None = None) -> st
     if docs:
         lines.append("  Documents:")
         for d in docs:
-            lines.append(f"    {d['rel_path']} — {d['title']}")
+            entry = entries.get(d["rel_path"])
+            if entry:
+                lines.append(f"    {entry.rel_path} — {entry.title} — {entry.word_count}w")
+                if entry.summary:
+                    lines.append(f"      {entry.summary}")
+            else:
+                lines.append(f"    {d['rel_path']} — {d['title']}")
     relations = load_relations(library_path)
     related = relations.get(key, [])
     if related:
@@ -629,8 +655,8 @@ def lookup_term(library_path: Path, term: str, exclude: str | None = None) -> st
     return "\n".join(lines)
 
 
-def get_summary(library_path: Path, rel_path: str, exclude: str | None = None) -> str:
-    """Return the summary block for a document by relative path."""
+def _get_summary(library_path: Path, rel_path: str, exclude: str | None = None) -> str:
+    """Return the summary block for a document by relative path (used for pre-loading related docs)."""
     if exclude and rel_path == exclude:
         return f"'{rel_path}' is the document currently being replied to and is not available."
     entries = _load_state(library_path)
@@ -673,7 +699,7 @@ def search_library(index: list[DocEntry], query: str) -> list[DocEntry]:
 LIBRARY_TOOLS = [
     {
         "name": "lookup_term",
-        "description": "Look up an index term and get the list of library documents tagged with it, plus semantically related terms to follow up on.",
+        "description": "Look up an index term and get the matching documents with their summaries, plus related terms to follow up on. Use this to discover relevant prior writing; use read_document when you need the full text of a specific piece.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -683,20 +709,6 @@ LIBRARY_TOOLS = [
                 }
             },
             "required": ["term"],
-        },
-    },
-    {
-        "name": "get_summary",
-        "description": "Get the title, word count, summary, and index terms for a specific library document.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Relative path of the document (e.g. 'philosophy/stoicism.md').",
-                }
-            },
-            "required": ["path"],
         },
     },
     {

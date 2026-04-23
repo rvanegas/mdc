@@ -41,9 +41,11 @@ from mdc.transcript import (
     TranscriptError,
     append_assistant_reply,
     extract_references,
+    extract_related,
     insert_references,
     parse_transcript,
     update_references_section,
+    update_related_section,
 )
 
 
@@ -82,11 +84,6 @@ def main(argv: list[str] | None = None) -> int:
             return run_index(
                 library_path=args.library_path,
                 refs_only=args.refs_only_all,
-            )
-        if args.command == "relate":
-            return run_relate(
-                library_path=args.library_path,
-                model=args.model,
                 reprocess_all=args.all,
             )
         if args.command == "new":
@@ -94,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "check":
             return run_check(Path(args.path))
         if args.command == "validate":
-            return run_validate([Path(p) for p in args.paths], verbose=args.verbose)
+            return run_validate([Path(p) for p in args.paths])
         if args.command == "fix":
             return run_fix([Path(p) for p in args.paths])
         if args.command == "reply":
@@ -140,28 +137,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     # relate
-    relate_parser = subparsers.add_parser(
-        "relate",
-        help="Build or update semantic relations between library index terms using an AI model.",
-    )
-    relate_parser.add_argument(
-        "library_path",
-        nargs="?",
-        default=None,
-        help="Path to library directory (overrides config file).",
-    )
-    relate_parser.add_argument(
-        "-m", "--model",
-        default=None,
-        help="Model to use (e.g. claude-haiku-4-5-20251001). Overrides config file.",
-    )
-    relate_parser.add_argument(
-        "--all",
-        action="store_true",
-        default=False,
-        help="Reprocess all terms, not just new or unprocessed ones.",
-    )
-
     # index
     index_parser = subparsers.add_parser(
         "index",
@@ -172,6 +147,12 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default=None,
         help="Path to library directory (overrides config file).",
+    )
+    index_parser.add_argument(
+        "--all",
+        action="store_true",
+        default=False,
+        help="Reindex all documents and rebuild all relations from scratch.",
     )
     index_parser.add_argument(
         "--refs-only-all",
@@ -198,12 +179,6 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser = subparsers.add_parser(
         "validate",
         help="Run all 12 mdform format rules on one or more files.",
-    )
-    validate_parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        default=False,
-        help="Show warnings in addition to errors.",
     )
     validate_parser.add_argument("paths", nargs="+", metavar="file.md")
 
@@ -351,7 +326,8 @@ def _parse_index_reply(text: str) -> tuple[str, list[str]]:
     return summary, terms
 
 
-def run_index(library_path: str | None, refs_only: bool = False) -> int:
+def run_index(library_path: str | None, refs_only: bool = False, reprocess_all: bool = False) -> int:
+    import random
     from mdc.library import MANIFEST_FILENAME, build_index
 
     config = load_config()
@@ -447,7 +423,7 @@ def run_index(library_path: str | None, refs_only: bool = False) -> int:
     print(f"\n{', '.join(parts)}.")
     print(f"Written to {lib_path / MANIFEST_FILENAME}.")
 
-    from mdc.library import load_terms, prune_relations
+    from mdc.library import cooccurrence_relations, load_relations, load_terms, prune_relations, save_relations
     new_terms = load_terms(lib_path)
     added_terms = sorted(new_terms - old_terms)
     removed_terms = sorted(old_terms - new_terms)
@@ -460,6 +436,108 @@ def run_index(library_path: str | None, refs_only: bool = False) -> int:
 
     if removed_terms:
         prune_relations(lib_path, set(removed_terms))
+
+    # ── semantic relations ────────────────────────────────────────────
+    all_terms = sorted(new_terms)
+    relations = load_relations(lib_path)
+
+    if all_terms and not refs_only:
+        all_terms_set = set(all_terms)
+        stale = {t for t in relations if t not in all_terms_set}
+        if stale:
+            prune_relations(lib_path, stale)
+            relations = load_relations(lib_path)
+
+        if reprocess_all:
+            to_process = all_terms_set
+        else:
+            unrelated = [t for t in all_terms if t not in relations]
+            to_process = set(unrelated)
+            for t in unrelated:
+                to_process.update(relations.get(t, []))
+            to_process &= all_terms_set
+
+        if to_process:
+            id_to_term: dict[int, str] = {i + 1: t for i, t in enumerate(all_terms)}
+            term_to_id: dict[str, int] = {t: i for i, t in id_to_term.items()}
+            process_ids = [term_to_id[t] for t in to_process]
+            random.shuffle(process_ids)
+            batch_size = 20
+            batches = [process_ids[i:i + batch_size] for i in range(0, len(process_ids), batch_size)]
+            total_batches = len(batches)
+            relate_cost = 0.0
+
+            if effective_model.startswith("claude-"):
+                from mdc.anthropic_client import AnthropicChatClient
+                rclient = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
+                rrates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
+
+                def call_model(prompt: str) -> str:
+                    nonlocal relate_cost
+                    reply = rclient.generate_reply("You are a library indexing assistant.", [{"role": "user", "content": prompt}])
+                    if rrates:
+                        in_rate, out_rate = rrates
+                        relate_cost += (
+                            reply.input_tokens * in_rate / 1_000_000
+                            + reply.output_tokens * out_rate / 1_000_000
+                            + reply.cache_creation_tokens * in_rate * 1.25 / 1_000_000
+                            + reply.cache_read_tokens * in_rate * 0.10 / 1_000_000
+                        )
+                    return reply.text
+            else:
+                from mdc.ollama_client import OllamaChatClient
+                rollama_model = effective_model.removeprefix("ollama/")
+                rclient = OllamaChatClient(model=rollama_model, base_url=config.ollama_base_url)
+
+                def call_model(prompt: str) -> str:
+                    reply = rclient.generate_reply([{"role": "user", "content": prompt}])
+                    return reply.text
+
+            print(f"\nBuilding relations for {len(to_process)} of {len(all_terms)} terms "
+                  f"in {total_batches} batches...")
+            for i, batch_ids in enumerate(batches, 1):
+                cost_str = f"  (total {_format_total(relate_cost)})" if relate_cost else ""
+                print(f"  batch {i}/{total_batches}{cost_str}")
+                prompt = _relate_prompt(id_to_term, batch_ids)
+                text = call_model(prompt)
+                parsed = _parse_relate_reply(text, batch_ids, id_to_term)
+                for term, related in parsed.items():
+                    clean = list(dict.fromkeys(r for r in related if r != term))
+                    relations[term] = clean
+                    for r in clean:
+                        existing = relations.setdefault(r, [])
+                        if term not in existing and term != r:
+                            existing.append(term)
+                save_relations(lib_path, relations)
+
+            relate_cost_str = f"  Total relations cost: {_format_total(relate_cost)}." if relate_cost else ""
+            print(f"\nRelations written for {len(relations)} terms.{relate_cost_str}")
+
+    # ── co-occurrence supplementation ────────────────────────────────
+    if relations:
+        cooc = cooccurrence_relations(lib_path, min_count=5)
+        new_pairs: list[tuple[str, str]] = []
+        all_pairs: list[tuple[str, str]] = []
+        for term, co_related in cooc.items():
+            if term not in relations:
+                continue
+            existing = relations[term]
+            for r in co_related:
+                if r != term:
+                    pair = (min(term, r), max(term, r))
+                    if pair not in [p for p in all_pairs]:
+                        all_pairs.append(pair)
+                    if r not in existing:
+                        existing.append(r)
+                        new_pairs.append(pair)
+        if new_pairs:
+            save_relations(lib_path, relations)
+        if all_pairs:
+            new_set = set(all_pairs) & set(new_pairs)
+            print(f"\n  Co-occurrence relations ({len(all_pairs)}):")
+            for a, b in sorted(all_pairs):
+                marker = " *" if (a, b) in new_set else ""
+                print(f"    {a} ↔ {b}{marker}")
 
     all_warnings = sanitize_warnings + keys_warnings
     if all_warnings:
@@ -481,7 +559,8 @@ def _relate_prompt(id_to_term: dict[int, str], batch_ids: list[int]) -> str:
         "Include terms that:\n"
         "- Cover the same concept from a different angle\n"
         "- Are the broader or narrower form of the concept\n"
-        "- Are frequently discussed together in the literature\n\n"
+        "- Are frequently discussed together in the literature\n"
+        "- Are morphological variants or derivatives of the same root\n\n"
         "Exclude terms that are only loosely or incidentally related.\n\n"
         "TERM LIST:\n"
         f"{terms_block}\n\n"
@@ -526,119 +605,6 @@ def _parse_relate_reply(
     return result
 
 
-def run_relate(library_path: str | None, model: str | None, reprocess_all: bool = False) -> int:
-    import random
-    from mdc.library import load_relations, load_terms, prune_relations, save_relations
-
-    config = load_config()
-
-    raw_path = library_path or (str(config.library_path) if config.library_path else None)
-    if not raw_path:
-        print("Error: no library path specified. Pass a path or set 'library_path' in config.")
-        return 1
-
-    lib_path = Path(raw_path).expanduser().resolve()
-    if not lib_path.is_dir():
-        print(f"Error: '{lib_path}' is not a directory.")
-        return 1
-
-    all_terms = sorted(load_terms(lib_path))
-    if not all_terms:
-        print("No indexed terms found. Run 'mdc index' first.")
-        return 1
-
-    effective_model = model or config.index_model
-    total_cost = 0.0
-    last_cost: list[float] = [0.0]
-
-    if effective_model.startswith("claude-"):
-        from mdc.anthropic_client import AnthropicChatClient
-        client = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
-        rates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
-
-        def call_model(prompt: str) -> str:
-            nonlocal total_cost
-            reply = client.generate_reply("You are a library indexing assistant.", [{"role": "user", "content": prompt}])
-            if rates:
-                in_rate, out_rate = rates
-                cost = (
-                    reply.input_tokens * in_rate / 1_000_000
-                    + reply.output_tokens * out_rate / 1_000_000
-                    + reply.cache_creation_tokens * in_rate * 1.25 / 1_000_000
-                    + reply.cache_read_tokens * in_rate * 0.10 / 1_000_000
-                )
-                total_cost += cost
-                last_cost[0] = cost
-            return reply.text
-
-    else:
-        from mdc.ollama_client import OllamaChatClient
-        ollama_model = effective_model.removeprefix("ollama/")
-        client = OllamaChatClient(model=ollama_model, base_url=config.ollama_base_url)
-
-        def call_model(prompt: str) -> str:
-            reply = client.generate_reply([{"role": "user", "content": prompt}])
-            return reply.text
-
-    relations = load_relations(lib_path)
-
-    # Prune stale terms before doing anything else.
-    all_terms_set = set(all_terms)
-    stale = {t for t in relations if t not in all_terms_set}
-    if stale:
-        prune_relations(lib_path, stale)
-        relations = load_relations(lib_path)
-        print(f"Pruned {len(stale)} removed term(s) from relations.")
-
-    # Assign stable numeric IDs sorted case-insensitively.
-    id_to_term: dict[int, str] = {i + 1: t for i, t in enumerate(all_terms)}
-
-    # Select terms to process.
-    if reprocess_all:
-        to_process = all_terms_set
-    else:
-        new_terms = [t for t in all_terms if t not in relations]
-        to_process = set(new_terms)
-        for t in new_terms:
-            to_process.update(relations.get(t, []))
-        to_process &= all_terms_set  # guard against stale entries in relations values
-
-    if not to_process:
-        print("Nothing to do — all terms already related. Use --all to reprocess.")
-        return 0
-
-    term_to_id: dict[str, int] = {t: i for i, t in id_to_term.items()}
-    process_ids = [term_to_id[t] for t in to_process]
-    random.shuffle(process_ids)
-    batch_size = 20
-    batches = [process_ids[i:i + batch_size] for i in range(0, len(process_ids), batch_size)]
-    total_batches = len(batches)
-
-    print(f"Building relations for {len(to_process)} of {len(all_terms)} terms "
-          f"in {total_batches} batches using model '{effective_model}'...")
-
-    for i, batch_ids in enumerate(batches, 1):
-        cost_str = f"  (total {_format_total(total_cost)})" if total_cost else ""
-        print(f"  batch {i}/{total_batches}{cost_str}")
-        prompt = _relate_prompt(id_to_term, batch_ids)
-        text = call_model(prompt)
-        parsed = _parse_relate_reply(text, batch_ids, id_to_term)
-
-        for term, related in parsed.items():
-            clean = list(dict.fromkeys(r for r in related if r != term))
-            relations[term] = clean
-            for r in clean:
-                existing = relations.setdefault(r, [])
-                if term not in existing and term != r:
-                    existing.append(term)
-
-        save_relations(lib_path, relations)
-
-    total_str = f"  Total cost: {_format_total(total_cost)}." if total_cost else ""
-    print(f"\nRelations written for {len(relations)} terms.{total_str}")
-    return 0
-
-
 def run_new(title: str) -> int:
     today = datetime.date.today().isoformat()
     filename = f"{today}-{slugify(title)}.md"
@@ -668,22 +634,28 @@ def run_check(path: Path) -> int:
     return 0
 
 
-def run_validate(paths: list[Path], verbose: bool = False) -> int:
+def run_validate(paths: list[Path]) -> int:
+    from mdc.library import resolve_title
+    from mdc.transcript import parse_transcript
+
+    lib = config.library_path if config.library_path and config.library_path.is_dir() else None
+
     any_errors = False
     for path in paths:
         if _require_md(path):
             any_errors = True
             continue
-        errs, warns = check_file(path)
-        visible_warns = warns if verbose else []
-        if errs or visible_warns:
+        errs = check_file(path)
+        if lib:
+            transcript = parse_transcript(_read_file(path))
+            for entry in transcript.related:
+                if resolve_title(lib, entry) is None:
+                    errs.append(f"Related title not found in library: {entry!r}")
+        if errs:
             print(f"{path}:")
             for e in errs:
                 print(f"  error: {e}")
-            for w in visible_warns:
-                print(f"  warning: {w}")
-            if errs:
-                any_errors = True
+            any_errors = True
         else:
             print(f"{path}: OK")
     return 1 if any_errors else 0
@@ -728,19 +700,15 @@ def run_fix(paths: list[Path]) -> int:
                 print()
                 continue
 
-        errs, warns = check_file(path)
+        errs = check_file(path)
 
-        if not applied and not errs and not warns:
+        if not applied and not errs:
             print(f"{path}: OK")
-        elif errs or warns:
+        elif errs:
             if not applied:
                 print(f"{path}:")
             for e in errs:
                 print(f"  error: {e}")
-            for w in warns:
-                print(f"  warning: {w}")
-
-        if errs:
             any_errors = True
 
     return 1 if any_errors else 0
@@ -813,18 +781,23 @@ def _run_reply_watch(
                                            reasoning_effort=reasoning_effort,
                                            verbose=verbose, status=noop)
 
-            reply_text = _upgrade_reply_headings(reply_text)
             if not reply_text.endswith("\n"):
                 sys.stdout.write("\n")
             sys.stdout.flush()
 
-            body, new_refs = extract_references(reply_text)
+            body_with_related, new_refs = extract_references(reply_text)
+            body, new_related = extract_related(body_with_related)
+            body = _upgrade_reply_headings(body)
             updated = append_assistant_reply(text, body, assistant_name=assistant_name,
                                              heading=transcript.pending_turn.heading)
-            existing_refs = list(parse_transcript(updated, assistant_name=assistant_name).references)
-            merged = insert_references(existing_refs, new_refs)
-            if merged != existing_refs:
+            updated_t = parse_transcript(updated, assistant_name=assistant_name)
+            merged = insert_references(list(updated_t.references), new_refs)
+            if merged != list(updated_t.references):
                 updated = update_references_section(updated, merged)
+            if new_related:
+                existing_related = list(parse_transcript(updated, assistant_name=assistant_name).related)
+                merged_related = existing_related + [r for r in new_related if r not in set(existing_related)]
+                updated = update_related_section(updated, merged_related)
             path.write_text(updated, encoding="utf-8")
             print("OK: reply appended.", flush=True)
         except Exception as exc:
@@ -896,18 +869,23 @@ def run_reply(
             status=status,
         )
 
-    reply_text = _upgrade_reply_headings(reply_text)
     if not reply_text.endswith("\n"):
         sys.stdout.write("\n")
     sys.stdout.flush()
     status("Appending to transcript...")
-    body, new_refs = extract_references(reply_text)
+    body_with_related, new_refs = extract_references(reply_text)
+    body, new_related = extract_related(body_with_related)
+    body = _upgrade_reply_headings(body)
     updated = append_assistant_reply(text, body, assistant_name=assistant_name, heading=transcript.pending_turn.heading)
 
-    existing_refs = list(parse_transcript(updated, assistant_name=assistant_name).references)
-    merged = insert_references(existing_refs, new_refs)
-    if merged != existing_refs:
+    updated_t = parse_transcript(updated, assistant_name=assistant_name)
+    merged = insert_references(list(updated_t.references), new_refs)
+    if merged != list(updated_t.references):
         updated = update_references_section(updated, merged)
+    if new_related:
+        existing_related = list(parse_transcript(updated, assistant_name=assistant_name).related)
+        merged_related = existing_related + [r for r in new_related if r not in set(existing_related)]
+        updated = update_related_section(updated, merged_related)
 
     path.write_text(updated, encoding="utf-8")
     status(f"Appended one reply to {path}.")
@@ -928,7 +906,7 @@ def _reply_anthropic(
     strict: bool = False,
 ) -> str:
     from mdc.anthropic_client import AnthropicChatClient
-    from mdc.library import LIBRARY_TOOLS, get_summary, lookup_term, read_document, resolve_title
+    from mdc.library import LIBRARY_TOOLS, _get_summary, lookup_term, read_document, resolve_title
 
     tools = None
     tool_executor = None
@@ -959,20 +937,28 @@ def _reply_anthropic(
             if rel_path is None:
                 status(f"! related document not found: \"{raw_title}\"")
             else:
-                related_summaries.append(get_summary(lib, rel_path, exclude=exclude))
+                related_summaries.append(_get_summary(lib, rel_path, exclude=exclude))
 
         library_tools_prompt = (
-            "You have access to a library of the user's own writings. To find relevant material:\n"
-            "1. Call lookup_term with a relevant index term. It returns matching documents and related terms.\n"
-            "2. Call get_summary for documents that look relevant.\n"
-            "3. Call read_document only when a summary confirms it is worth reading in full.\n"
-            "Start by looking up index terms relevant to the user's question."
+            "You have access to the Personal Library — a collection of the user's own writings. "
+            "To find relevant material:\n"
+            "1. Call lookup_term with a relevant index term. It returns matching Personal Library documents with summaries and related terms.\n"
+            "2. Call read_document when you need the full text of a specific Personal Library document.\n"
+            "Follow the Related terms from each lookup to discover adjacent material, and look up all "
+            "plausibly relevant terms before composing your reply. "
+            "Documents have dates and views may evolve or be superseded; prefer more recent documents "
+            "when there is tension between them, and flag apparent contradictions to the user.\n"
+            "Only include a Personal Library document in your reply if you have called read_document on it. "
+            "List Personal Library documents under '## Related' using the format '| *Exact Title*' "
+            "(the section implies the source; no date, author, or other annotation). "
+            "List all other referenced works under '## References'. "
+            "Do not insert a horizontal rule before these sections."
         )
         library_context = library_tools_prompt
         if preloaded:
-            library_context += "\n\nPre-looked-up library terms:\n\n" + "\n\n".join(preloaded)
+            library_context += "\n\nPre-looked-up Personal Library terms:\n\n" + "\n\n".join(preloaded)
         if related_summaries:
-            library_context += "\n\nPre-loaded summaries for documents related to this transcript:\n\n" + "\n\n".join(related_summaries)
+            library_context += "\n\nPre-loaded summaries for Personal Library documents related to this transcript:\n\n" + "\n\n".join(related_summaries)
 
         missing_terms: list[str] = []
 
@@ -984,8 +970,6 @@ def _reply_anthropic(
                     status(f"! library term not found: \"{term}\"")
                     missing_terms.append(term)
                 return result
-            if tool_name == "get_summary":
-                return get_summary(lib, str(tool_input.get("path", "")), exclude=exclude)
             if tool_name == "read_document":
                 return read_document(lib, str(tool_input.get("path", "")), exclude=exclude)
             return f"Unknown tool: {tool_name}"
@@ -1153,7 +1137,7 @@ def _print_anthropic_usage(model: str, reply) -> None:
     else:
         parts.append("cost=unknown model")
 
-    print(f"  {' | '.join(parts)}")
+    print(f"\n  {' | '.join(parts)}")
 
 
 def _print_openai_usage(model: str, reply) -> None:
@@ -1167,4 +1151,4 @@ def _print_openai_usage(model: str, reply) -> None:
         parts.append(_format_cost(cost))
     else:
         parts.append("cost=unknown model")
-    print(f"  {' | '.join(parts)}")
+    print(f"\n  {' | '.join(parts)}")
