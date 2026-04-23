@@ -105,6 +105,8 @@ class AnthropicChatClient:
             except KeyboardInterrupt:
                 raise
 
+            if all_text_chunks and chunks:
+                all_text_chunks.append("\n\n")
             all_text_chunks.extend(chunks)
 
             usage = final_message.usage if final_message is not None else None
