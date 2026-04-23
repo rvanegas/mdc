@@ -216,7 +216,11 @@ def build_parser() -> argparse.ArgumentParser:
         "new",
         help="Create a new mdform conversation file in the current directory.",
     )
-    new_parser.add_argument("title", help="Title of the conversation.")
+    new_parser.add_argument(
+        "-t", "--title",
+        default=None,
+        help="Title of the conversation.",
+    )
     new_parser.add_argument(
         "-e", "--edit",
         action="store_true",
@@ -789,8 +793,19 @@ def _parse_relate_reply(
     return result
 
 
-def run_new(title: str, edit: bool = False) -> int:
+def run_new(title: str | None, edit: bool = False) -> int:
     today = datetime.date.today().isoformat()
+    if title is None:
+        base = "Untitled"
+        candidate = base
+        n = 2
+        while True:
+            if not Path(f"{today}-{slugify(candidate)}.md").exists():
+                if not edit or not Path(f"{today}-{slugify(candidate + ' (Editor)')}.md").exists():
+                    break
+            candidate = f"{base} {n}"
+            n += 1
+        title = candidate
     filename = f"{today}-{slugify(title)}.md"
     path = Path(filename)
     if path.exists():
