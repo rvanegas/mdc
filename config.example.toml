@@ -22,3 +22,10 @@ model = "claude-sonnet-4-6"
 # Model used by "mdc index" to summarize library documents.
 # Summary and term count scale automatically with document length.
 index_model = "claude-haiku-4-5"
+
+# Section headings recognized as the user's own voice in transcripts.
+# Used to classify documents during indexing and to validate reply targets.
+user_names = ["Prompt", "Rodrigo"]
+
+# Section headings recognized as LLM voice in transcripts.
+llm_names = ["Claude", "GPT"]

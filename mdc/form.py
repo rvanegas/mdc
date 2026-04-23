@@ -229,6 +229,39 @@ def fix_title_section(lines: list[str]) -> tuple[list[str], list[str]]:
 
 # ── checker ───────────────────────────────────────────────────────────────────
 
+def check_global_issues(path: Path) -> list[str]:
+    """Check encoding and bare-label issues that apply to any document type."""
+    errors: list[str] = []
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raw = path.read_text(encoding="latin-1")
+        path.with_suffix(path.suffix + ".bak").write_bytes(path.read_bytes())
+        path.write_text(raw, encoding="utf-8")
+        print(f"Warning: {path.name} was not UTF-8; converted in place (backup: {path.name}.bak).", file=sys.stderr)
+
+    lines = raw.split("\n")
+
+    def err(lineno: int, msg: str) -> None:
+        errors.append(f"line {lineno}: {msg}")
+
+    for i, line in enumerate(lines):
+        if "\ufffc" in line:
+            err(i + 1, "contains U+FFFC OBJECT REPLACEMENT CHARACTER — run 'mdc fix' to remove it")
+
+    for i, line in enumerate(lines):
+        if _RTL_SPAN_RE.search(line):
+            err(i + 1, 'contains [char]{dir="rtl"} encoding — run \'mdc fix\' to replace with plain ASCII')
+
+    _BARE_LABELS = {"Prompt:", "ChatGPT:", "References:"}
+    for i, line in enumerate(lines):
+        if line.strip() in _BARE_LABELS:
+            err(i + 1, f"bare label '{line.strip()}' — use '## Prompt' / '## GPT' / '## References' instead")
+
+    return errors
+
+
 def check_file(path: Path) -> list[str]:
     errors: list[str] = []
 

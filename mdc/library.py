@@ -23,6 +23,7 @@ _RELATIONS_STATE_PATH = _STATE_DIR / "library-relations.json"
 _REFS_SECTION_RE = re.compile(r"^## References\s*$", re.MULTILINE)
 _RELATED_SECTION_RE = re.compile(r"^## Related\s*$", re.MULTILINE)
 _NEXT_H2_RE = re.compile(r"^## ", re.MULTILINE)
+_STRUCTURAL_HEADINGS = frozenset({"References", "Notes", "Related"})
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,60 @@ def _extract_refs(content: str) -> tuple[str, ...]:
 
 def _extract_related(content: str) -> tuple[str, ...]:
     return _extract_section(content, _RELATED_SECTION_RE)
+
+
+def is_library_transcript(
+    content: str,
+    user_names: tuple[str, ...],
+    llm_names: tuple[str, ...],
+) -> bool:
+    """Return True if content looks like a library transcript.
+
+    Rules:
+      1. Every ## heading is a single word.
+      2. At least one heading (excluding structural ones) matches a known name.
+    """
+    from mdc.transcript import HEADING_RE
+    headings = [m.group(2).strip() for m in HEADING_RE.finditer(content)]
+    if not headings:
+        return False
+    if any(len(h.split()) != 1 for h in headings):
+        return False
+    known = frozenset(user_names) | frozenset(llm_names)
+    return any(h in known for h in headings if h not in _STRUCTURAL_HEADINGS)
+
+
+def extract_voice_sections(
+    content: str,
+    user_names: tuple[str, ...],
+    llm_names: tuple[str, ...],
+) -> dict[str, list[str]]:
+    """Split a library transcript into sections labelled by voice.
+
+    Returns {"user": [...], "llm": [...], "other": [...]}.
+    Structural headings (References, Notes, Related) are excluded.
+    """
+    from mdc.transcript import HEADING_RE
+    user_set = frozenset(user_names)
+    llm_set = frozenset(llm_names)
+    sections: dict[str, list[str]] = {"user": [], "llm": [], "other": []}
+    matches = list(HEADING_RE.finditer(content))
+    for idx, m in enumerate(matches):
+        speaker = m.group(2).strip()
+        if speaker in _STRUCTURAL_HEADINGS:
+            continue
+        body_start = m.end()
+        body_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(content)
+        body = content[body_start:body_end].strip()
+        if not body:
+            continue
+        if speaker in user_set:
+            sections["user"].append(body)
+        elif speaker in llm_set:
+            sections["llm"].append(body)
+        else:
+            sections["other"].append(body)
+    return sections
 
 
 def summary_target(word_count: int) -> str:

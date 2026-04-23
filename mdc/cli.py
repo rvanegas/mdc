@@ -36,7 +36,7 @@ class _LibraryTermNotFoundError(Exception):
 
 from mdc.assets import build_anthropic_input, build_chat_input, build_response_input, collect_local_assets
 from mdc.config import _default_assistant_name, load_config
-from mdc.form import check_file, fix_object_replacement, fix_rtl_spans, fix_title_section, slugify
+from mdc.form import check_file, check_global_issues, fix_object_replacement, fix_rtl_spans, fix_title_section, slugify
 from mdc.transcript import (
     TranscriptError,
     append_assistant_reply,
@@ -91,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "check":
             return run_check(Path(args.path))
         if args.command == "validate":
-            return run_validate([Path(p) for p in args.paths])
+            return run_validate([Path(p) for p in args.paths], force_transcript=args.transcript)
         if args.command == "fix":
             return run_fix([Path(p) for p in args.paths])
         if args.command == "reply":
@@ -178,9 +178,15 @@ def build_parser() -> argparse.ArgumentParser:
     # validate
     validate_parser = subparsers.add_parser(
         "validate",
-        help="Run all 12 mdform format rules on one or more files.",
+        help="Run mdform format rules on one or more files.",
     )
     validate_parser.add_argument("paths", nargs="+", metavar="file.md")
+    validate_parser.add_argument(
+        "-t", "--transcript",
+        action="store_true",
+        default=False,
+        help="Force transcript validation even for plain documents.",
+    )
 
     # fix
     fix_parser = subparsers.add_parser(
@@ -270,6 +276,47 @@ def run_config() -> int:
     return 0
 
 
+def _annotate_voice(
+    content: str,
+    user_names: tuple[str, ...],
+    llm_names: tuple[str, ...],
+) -> str:
+    """Return content annotated with [VOICE: ...] labels per section.
+
+    Non-transcripts (including sectionless documents) are prefixed with a
+    label indicating the whole document is the user's own writing.
+    """
+    from mdc.library import _STRUCTURAL_HEADINGS, is_library_transcript
+    from mdc.transcript import HEADING_RE
+
+    if not is_library_transcript(content, user_names, llm_names):
+        return "[VOICE: this entire document is the user's own writing]\n\n" + content
+
+    user_set = frozenset(user_names)
+    llm_set = frozenset(llm_names)
+
+    def _label(speaker: str) -> str:
+        if speaker in user_set:
+            return "[VOICE: user]"
+        if speaker in llm_set:
+            return "[VOICE: llm — collaborative elaboration, implicitly endorsed unless contradicted]"
+        if speaker in _STRUCTURAL_HEADINGS:
+            return ""
+        return "[VOICE: third-party]"
+
+    parts: list[str] = []
+    matches = list(HEADING_RE.finditer(content))
+    prev_end = 0
+    for m in matches:
+        parts.append(content[prev_end:m.end()])
+        label = _label(m.group(2).strip())
+        if label:
+            parts.append(f"\n{label}")
+        prev_end = m.end()
+    parts.append(content[prev_end:])
+    return "".join(parts)
+
+
 def _index_prompt(content: str, word_count: int) -> str:
     from mdc.library import summary_target, terms_target
     s_target = summary_target(word_count)
@@ -282,7 +329,13 @@ def _index_prompt(content: str, word_count: int) -> str:
         "SUMMARY: <summary text here>\n"
         "TERMS: <term1>; <term2>; <term3>; ...\n\n"
         "RULES:\n"
-        f"- SUMMARY must be {s_target} describing the document's actual subject matter.\n"
+        f"- SUMMARY must be {s_target} describing the document's actual subject matter. "
+        "When [VOICE: ...] labels are present: [VOICE: user] marks the user's direct words; "
+        "[VOICE: llm — collaborative elaboration, implicitly endorsed unless contradicted] marks AI replies that "
+        "expand on the user's thinking and should be treated as representing the user's intellectual "
+        "context unless a later [VOICE: user] section explicitly contradicts them; "
+        "[VOICE: third-party] marks external sources or quoted voices; "
+        "[VOICE: this entire document is the user's own writing] means all content is the user's voice.\n"
         f"- TERMS must be {t_target} index terms separated by semicolons: key topics, "
         "concepts, and names as found in a book index. Write people's names in "
         "inverted form suitable for sorting (e.g. 'Twain, Mark'). "
@@ -356,7 +409,8 @@ def run_index(library_path: str | None, refs_only: bool = False, reprocess_all: 
             def summarize(content: str, word_count: int) -> tuple[str, list[str]]:
                 nonlocal total_cost
                 system = "You are a library indexing assistant."
-                messages = [{"role": "user", "content": _index_prompt(content, word_count)}]
+                annotated = _annotate_voice(content, config.user_names, config.llm_names)
+                messages = [{"role": "user", "content": _index_prompt(annotated, word_count)}]
                 reply = client.generate_reply(system, messages)
                 if rates:
                     in_rate, out_rate = rates
@@ -376,7 +430,8 @@ def run_index(library_path: str | None, refs_only: bool = False, reprocess_all: 
             client = OllamaChatClient(model=ollama_model, base_url=config.ollama_base_url)
 
             def summarize(content: str, word_count: int) -> tuple[str, list[str]]:
-                messages = [{"role": "user", "content": _index_prompt(content, word_count)}]
+                annotated = _annotate_voice(content, config.user_names, config.llm_names)
+                messages = [{"role": "user", "content": _index_prompt(annotated, word_count)}]
                 reply = client.generate_reply(messages)
                 return _parse_index_reply(reply.text)
 
@@ -634,10 +689,10 @@ def run_check(path: Path) -> int:
     return 0
 
 
-def run_validate(paths: list[Path]) -> int:
-    from mdc.library import resolve_title
-    from mdc.transcript import parse_transcript
+def run_validate(paths: list[Path], force_transcript: bool = False) -> int:
+    from mdc.library import is_library_transcript, resolve_title
 
+    config = load_config()
     lib = config.library_path if config.library_path and config.library_path.is_dir() else None
 
     any_errors = False
@@ -645,19 +700,31 @@ def run_validate(paths: list[Path]) -> int:
         if _require_md(path):
             any_errors = True
             continue
-        errs = check_file(path)
-        if lib:
-            transcript = parse_transcript(_read_file(path))
-            for entry in transcript.related:
-                if resolve_title(lib, entry) is None:
-                    errs.append(f"Related title not found in library: {entry!r}")
+        content = _read_file(path)
+        is_transcript = is_library_transcript(content, config.user_names, config.llm_names)
+        doc_label = "transcript" if is_transcript else "plain document"
+
+        if is_transcript or force_transcript:
+            errs = check_file(path)
+            if lib and not errs:
+                try:
+                    transcript = parse_transcript(content)
+                    for entry in transcript.related:
+                        if resolve_title(lib, entry) is None:
+                            errs.append(f"Related title not found in library: {entry!r}")
+                except TranscriptError:
+                    pass
+        else:
+            errs = check_global_issues(path)
+
         if errs:
-            print(f"{path}:")
+            label = doc_label if not force_transcript or is_transcript else f"{doc_label}, validated as transcript"
+            print(f"{path} [{label}]:")
             for e in errs:
                 print(f"  error: {e}")
             any_errors = True
         else:
-            print(f"{path}: OK")
+            print(f"{path}: OK [{doc_label}]")
     return 1 if any_errors else 0
 
 
@@ -833,6 +900,11 @@ def run_reply(
         print("Error: no model specified. Pass --model or set 'model' in config.toml.")
         return 1
     assistant_name = _default_assistant_name(effective_model)
+
+    from mdc.library import is_library_transcript
+    if not is_library_transcript(text, config.user_names, config.llm_names):
+        print(f"Error: '{path}' is not a recognized transcript. Use 'mdc validate -t' to check transcript conditions.")
+        return 1
 
     status("Validating transcript...")
     transcript = parse_transcript(text, assistant_name=assistant_name)
