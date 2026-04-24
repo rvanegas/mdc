@@ -158,7 +158,12 @@ def main(argv: list[str] | None = None) -> int:
             extra = args.diff_args or []
             if extra and extra[0] == "--":
                 extra = extra[1:]
-            return run_diff(Path(args.path), diff_args=extra or None)
+            return run_diff(
+                Path(args.path),
+                revision=args.revision,
+                delta=args.delta,
+                diff_args=extra or None,
+            )
         if args.command == "config":
             return run_config()
         if args.command == "pdf":
@@ -325,6 +330,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     diff_parser.add_argument("path", help="Path to the edited file.")
     diff_parser.add_argument(
+        "-r", "--revision",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Diff revision N against the current file.",
+    )
+    diff_parser.add_argument(
+        "-d", "--delta",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Show the Nth most recent change (default: 1).",
+    )
+    diff_parser.add_argument(
         "diff_args",
         nargs=argparse.REMAINDER,
         help=argparse.SUPPRESS,
@@ -369,7 +388,12 @@ def _colorize_diff(text: str) -> str:
     return "".join(out)
 
 
-def run_diff(path: Path, diff_args: list[str] | None = None) -> int:
+def run_diff(
+    path: Path,
+    revision: int | None = None,
+    delta: int | None = None,
+    diff_args: list[str] | None = None,
+) -> int:
     import re as _re
     import subprocess
     import sys
@@ -384,21 +408,50 @@ def run_diff(path: Path, diff_args: list[str] | None = None) -> int:
     parent = path.parent
 
     backup_re = _re.compile(rf"^{_re.escape(stem)}--(\d+){_re.escape(suffix)}$")
-    highest_n = 0
-    backup: Path | None = None
+    revisions: list[tuple[int, Path]] = []
     for sibling in parent.iterdir():
         m = backup_re.match(sibling.name)
         if m:
-            n = int(m.group(1))
-            if n > highest_n:
-                highest_n = n
-                backup = sibling
+            revisions.append((int(m.group(1)), sibling))
+    revisions.sort(reverse=True)
 
-    if backup is None:
-        print(f"No backup found for {path.name}. Has 'mdc reply' edited this file yet?")
+    if not revisions:
+        print(f"No revisions found for {path.name}. Has 'mdc reply' edited this file yet?")
         return 1
 
-    cmd = ["diff", "-u"] + (diff_args or []) + [str(backup), str(path)]
+    if revision is not None:
+        vpath = parent / f"{stem}--{revision}{suffix}"
+        if not vpath.is_file():
+            print(f"Error: revision {revision} not found.")
+            return 1
+        baseline, target = vpath, path
+    else:
+        # Build change chain: current file followed by revisions highest-first.
+        # Find consecutive pairs whose content differs; --delta N selects the Nth.
+        chain = [path] + [vpath for _, vpath in revisions]
+        _cache: dict[Path, str] = {}
+
+        def _content(p: Path) -> str:
+            if p not in _cache:
+                _cache[p] = p.read_text(encoding="utf-8")
+            return _cache[p]
+
+        pairs: list[tuple[Path, Path]] = []  # (older, newer)
+        for i in range(len(chain) - 1):
+            if _content(chain[i]) != _content(chain[i + 1]):
+                pairs.append((chain[i + 1], chain[i]))
+
+        if not pairs:
+            print(f"No changes: {path.name} matches all revisions.")
+            return 0
+
+        n = delta if delta is not None else 1
+        if n < 1 or n > len(pairs):
+            print(f"Error: delta {n} out of range (1–{len(pairs)}).")
+            return 1
+        baseline, target = pairs[n - 1]
+
+    cmd = ["diff", "-u"] + (diff_args or []) + [str(baseline), str(target)]
     result = subprocess.run(cmd, capture_output=True, text=True)
     output = result.stdout
     if sys.stdout.isatty() and output:
@@ -1193,7 +1246,7 @@ def _reply_anthropic(
         if preloaded:
             library_context += "\n\nPre-looked-up Personal Library terms:\n\n" + "\n\n".join(preloaded)
         if related_summaries:
-            library_context += "\n\nPre-loaded summaries for Personal Library documents related to this transcript:\n\n" + "\n\n".join(related_summaries)
+            library_context += "\n\nThe following Personal Library documents are already known to be relevant to this transcript. Use their index terms as starting points for lookup_term to discover adjacent material before composing your reply:\n\n" + "\n\n".join(related_summaries)
 
         missing_terms: list[str] = []
 
@@ -1222,7 +1275,7 @@ def _reply_anthropic(
 
     edit_targets = resolve_edit_targets(transcript.preamble)
     if edit_targets:
-        edit_exec = make_edit_executor(edit_targets)
+        edit_exec = make_edit_executor(edit_targets, wrap_width=config.wrap_width)
         edit_context = build_edit_context(edit_targets, wrap_width=config.wrap_width)
         tools = (tools or []) + [EDIT_TOOL]
         prev_exec = tool_executor

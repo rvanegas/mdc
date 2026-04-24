@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import difflib
 import re
-import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -55,7 +54,7 @@ def build_edit_context(targets: list[Path], wrap_width: int = 100) -> str:
     """Build the file-content block injected into the system prompt.
 
     Wraps each target before sending to the model. If wrapping changes the
-    content, saves a backup and writes the wrapped version to disk first so
+    content, saves a revision and writes the wrapped version to disk first so
     that subsequent edit diffs are against the already-wrapped text.
     """
     from mdc.cli import wrap_paragraphs
@@ -64,29 +63,42 @@ def build_edit_context(targets: list[Path], wrap_width: int = 100) -> str:
         raw = t.read_text(encoding="utf-8")
         content = wrap_paragraphs(raw, width=wrap_width)
         if content != raw:
-            _save_backup(t)
-            t.write_text(content, encoding="utf-8")
+            _write_version(t, content)
         parts.append(f"--- {t.name} ---")
         parts.append(content.rstrip())
         parts.append(f"--- end {t.name} ---")
     return "\n".join(parts)
 
 
-def _save_backup(path: Path) -> Path:
-    """Copy path → path--{n+1}.ext where n is the highest existing backup number."""
+def _write_version(path: Path, content: str) -> None:
+    """Write content to path and to a new numbered revision file.
+
+    The numbered file is only created if path currently matches the latest
+    revision (i.e. no manual edits since the last automated write). If path
+    has diverged, only the current file is updated.
+    """
     stem = path.stem
     suffix = path.suffix
     parent = path.parent
 
     highest = 0
+    latest_revision: Path | None = None
     for sibling in parent.iterdir():
         m = _BACKUP_RE.match(sibling.name)
         if m and m.group(1) == stem and m.group(3) == suffix:
-            highest = max(highest, int(m.group(2)))
+            n = int(m.group(2))
+            if n > highest:
+                highest = n
+                latest_revision = sibling
 
-    backup = parent / f"{stem}--{highest + 1}{suffix}"
-    shutil.copy2(path, backup)
-    return backup
+    current = path.read_text(encoding="utf-8") if path.exists() else None
+    latest_content = latest_revision.read_text(encoding="utf-8") if latest_revision else None
+
+    if current is None or latest_content is None or current == latest_content:
+        new_revision = parent / f"{stem}--{highest + 1}{suffix}"
+        new_revision.write_text(content, encoding="utf-8")
+
+    path.write_text(content, encoding="utf-8")
 
 
 def _make_diff(old_text: str, new_text: str, name: str) -> str:
@@ -102,7 +114,7 @@ def _make_diff(old_text: str, new_text: str, name: str) -> str:
     return "".join(lines) if lines else "(no changes)"
 
 
-def make_edit_executor(targets: list[Path]) -> Callable[[str, dict[str, object]], str]:
+def make_edit_executor(targets: list[Path], wrap_width: int = 100) -> Callable[[str, dict[str, object]], str]:
     """Return a tool_executor that handles edit_file calls for the given targets."""
     allowed = {t.resolve(): t for t in targets}
     by_name = {t.name: t for t in targets}
@@ -126,9 +138,11 @@ def make_edit_executor(targets: list[Path]) -> Callable[[str, dict[str, object]]
         if old_str not in current:
             return f"Error: old_str not found in {target.name}. No changes made."
 
+        if new_str and any(len(line) > wrap_width for line in new_str.splitlines()):
+            from mdc.cli import wrap_paragraphs
+            new_str = wrap_paragraphs(new_str, width=wrap_width)
         new_content = current.replace(old_str, new_str, 1)
-        _save_backup(target)
-        target.write_text(new_content, encoding="utf-8")
+        _write_version(target, new_content)
         diff = _make_diff(current, new_content, target.name)
         sys.stdout.write(diff + "\n")
         sys.stdout.flush()
