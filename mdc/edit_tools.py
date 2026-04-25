@@ -144,7 +144,9 @@ def make_edit_executor(targets: list[Path], wrap_width: int = 100) -> Callable[[
         new_content = current.replace(old_str, new_str, 1)
         _write_version(target, new_content)
         diff = _make_diff(current, new_content, target.name)
-        sys.stdout.write(diff + "\n")
+        added = sum(1 for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
+        removed = sum(1 for l in diff.splitlines() if l.startswith("-") and not l.startswith("---"))
+        sys.stdout.write(f"edit_file: +{added} / -{removed}\n")
         sys.stdout.flush()
         return diff
 

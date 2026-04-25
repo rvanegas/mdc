@@ -757,7 +757,7 @@ def run_index(library_path: str | None, refs_only: bool = False, reprocess_all: 
 
     # ── co-occurrence supplementation ────────────────────────────────
     if relations:
-        cooc = cooccurrence_relations(lib_path, min_count=5)
+        cooc = cooccurrence_relations(lib_path, min_count=6)
         new_pairs: list[tuple[str, str]] = []
         all_pairs: list[tuple[str, str]] = []
         for term, co_related in cooc.items():
@@ -775,11 +775,7 @@ def run_index(library_path: str | None, refs_only: bool = False, reprocess_all: 
         if new_pairs:
             save_relations(lib_path, relations)
         if all_pairs:
-            new_set = set(all_pairs) & set(new_pairs)
-            print(f"\n  Co-occurrence relations ({len(all_pairs)}):")
-            for a, b in sorted(all_pairs):
-                marker = " *" if (a, b) in new_set else ""
-                print(f"    {a} ↔ {b}{marker}")
+            print(f"\n  Co-occurrence relations: {len(all_pairs)} found, {len(new_pairs)} new.")
 
     all_warnings = sanitize_warnings + keys_warnings
     if all_warnings:
@@ -1068,20 +1064,7 @@ def _run_reply_watch(
                 sys.stdout.write("\n")
             sys.stdout.flush()
 
-            body_with_related, new_refs = extract_references(reply_text)
-            body, new_related = extract_related(body_with_related)
-            body = _upgrade_reply_headings(body)
-            updated = append_assistant_reply(text, body, assistant_name=assistant_name,
-                                             heading=transcript.pending_turn.heading)
-            updated_t = parse_transcript(updated, assistant_name=assistant_name)
-            merged = insert_references(list(updated_t.references), new_refs)
-            if merged != list(updated_t.references):
-                updated = update_references_section(updated, merged)
-            if new_related:
-                existing_related = list(parse_transcript(updated, assistant_name=assistant_name).related)
-                merged_related = existing_related + [r for r in new_related if r not in set(existing_related)]
-                updated = update_related_section(updated, merged_related)
-            path.write_text(updated, encoding="utf-8")
+            _save_reply(path, text, reply_text, assistant_name, transcript.pending_turn.heading)
             print("OK: reply appended.", flush=True)
         except Exception as exc:
             print(f"Error: {exc}", flush=True)
@@ -1161,21 +1144,7 @@ def run_reply(
         sys.stdout.write("\n")
     sys.stdout.flush()
     status("Appending to transcript...")
-    body_with_related, new_refs = extract_references(reply_text)
-    body, new_related = extract_related(body_with_related)
-    body = _upgrade_reply_headings(body)
-    updated = append_assistant_reply(text, body, assistant_name=assistant_name, heading=transcript.pending_turn.heading)
-
-    updated_t = parse_transcript(updated, assistant_name=assistant_name)
-    merged = insert_references(list(updated_t.references), new_refs)
-    if merged != list(updated_t.references):
-        updated = update_references_section(updated, merged)
-    if new_related:
-        existing_related = list(parse_transcript(updated, assistant_name=assistant_name).related)
-        merged_related = existing_related + [r for r in new_related if r not in set(existing_related)]
-        updated = update_related_section(updated, merged_related)
-
-    path.write_text(updated, encoding="utf-8")
+    _save_reply(path, text, reply_text, assistant_name, transcript.pending_turn.heading)
     status(f"Appended one reply to {path}.")
     return 0
 
@@ -1257,9 +1226,14 @@ def _reply_anthropic(
                 if "Term not found" in result:
                     status(f"! library term not found: \"{term}\"")
                     missing_terms.append(term)
+                else:
+                    status(f"lookup_term: {term}")
                 return result
             if tool_name == "read_document":
-                return read_document(lib, str(tool_input.get("path", "")), exclude=exclude)
+                path = str(tool_input.get("path", ""))
+                result = read_document(lib, path, exclude=exclude)
+                status(f"read_document: {Path(path).name}")
+                return result
             return f"Unknown tool: {tool_name}"
 
         def post_batch() -> None:
@@ -1287,6 +1261,22 @@ def _reply_anthropic(
         for t in edit_targets:
             status(f"Edit target: {t.name}")
 
+    lib_titles: dict[str, str] = {}
+    if library and config.library_path:
+        from mdc.library import load_entries as _load_entries
+        lib_titles = {e.rel_path: e.title for e in _load_entries(config.library_path)}
+
+    def _format_tool_annotation(tool_name: str, tool_input: dict[str, object]) -> str:
+        if tool_name == "read_document":
+            rel_path = str(tool_input.get("path", ""))
+            title = lib_titles.get(rel_path, Path(rel_path).stem)
+            return f"[read_document: {title}]"
+        if tool_name == "lookup_term":
+            return f"[lookup_term: {tool_input.get('term', '')}]"
+        if tool_name == "edit_file":
+            return f"[edit_file: {tool_input.get('path', '')}]"
+        return f"[{tool_name}]"
+
     client = AnthropicChatClient(model=model, api_key=config.anthropic_api_key)
     for assets in collect_local_assets(transcript, path).values():
         for asset in assets:
@@ -1301,6 +1291,7 @@ def _reply_anthropic(
         tools=tools,
         tool_executor=tool_executor,
         post_batch=post_batch if library else None,
+        format_tool_annotation=_format_tool_annotation,
     )
     if verbose:
         _print_anthropic_usage(model, reply)
@@ -1391,6 +1382,30 @@ def _reply_openai(
     if verbose:
         _print_openai_usage(model, reply)
     return reply.text
+
+
+def _save_reply(path: Path, text: str, reply_text: str, assistant_name: str, heading: str) -> None:
+    from mdc.edit_tools import _BACKUP_RE
+    body_with_related, new_refs = extract_references(reply_text)
+    body, new_related = extract_related(body_with_related)
+    body = _upgrade_reply_headings(body)
+    updated = append_assistant_reply(text, body, assistant_name=assistant_name, heading=heading)
+    updated_t = parse_transcript(updated, assistant_name=assistant_name)
+    merged = insert_references(list(updated_t.references), new_refs)
+    if merged != list(updated_t.references):
+        updated = update_references_section(updated, merged)
+    if new_related:
+        existing_related = list(parse_transcript(updated, assistant_name=assistant_name).related)
+        merged_related = existing_related + [r for r in new_related if r not in set(existing_related)]
+        updated = update_related_section(updated, merged_related)
+    stem, suffix, parent = path.stem, path.suffix, path.parent
+    highest = max(
+        (int(m.group(2)) for s in parent.iterdir()
+         if (m := _BACKUP_RE.match(s.name)) and m.group(1) == stem and m.group(3) == suffix),
+        default=0,
+    )
+    (parent / f"{stem}--{highest + 1}{suffix}").write_text(text, encoding="utf-8")
+    path.write_text(updated, encoding="utf-8")
 
 
 def _upgrade_reply_headings(text: str) -> str:

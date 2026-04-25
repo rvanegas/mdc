@@ -575,6 +575,8 @@ def build_index(
     for md_path in sorted(library_path.rglob("*.md")):
         if md_path.name in (MANIFEST_FILENAME, INDEX_FILENAME, KEYS_FILENAME, REFERENCES_FILENAME, RELATED_FILENAME):
             continue
+        if re.search(r"--\d+\.md$", md_path.name):
+            continue
         rel_path = str(md_path.relative_to(library_path))
 
         existing = entries_by_path.get(rel_path)

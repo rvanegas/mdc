@@ -74,6 +74,7 @@ class AnthropicChatClient:
         tools: list[dict[str, object]] | None = None,
         tool_executor: Callable[[str, dict[str, object]], str] | None = None,
         post_batch: Callable[[], None] | None = None,
+        format_tool_annotation: Callable[[str, dict[str, object]], str] | None = None,
     ) -> AnthropicReply:
         thinking, output_config, max_tokens = _thinking_params(reasoning_effort)
         stream_kwargs: dict[str, object] = {
@@ -120,15 +121,21 @@ class AnthropicChatClient:
 
             tool_uses = [b for b in final_message.content if b.type == "tool_use"]
             tool_results = []
+            tool_annotations: list[str] = []
             for tu in tool_uses:
+                label = format_tool_annotation(tu.name, dict(tu.input)) if format_tool_annotation else f"[{tu.name}]"
+                prefix = "\n\n" if not tool_annotations else "\n"
+                marker = f"{prefix}{label}"
                 if on_delta is not None:
-                    on_delta(f"\n[{tu.name}]\n")
+                    on_delta(marker)
+                tool_annotations.append(marker)
                 result = tool_executor(tu.name, dict(tu.input))
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tu.id,
                     "content": result,
                 })
+            all_text_chunks.extend(tool_annotations)
 
             if post_batch is not None:
                 post_batch()
