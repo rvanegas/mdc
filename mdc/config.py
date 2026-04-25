@@ -92,12 +92,11 @@ def load_config() -> AppConfig:
     anthropic_api_key = str(data.get("anthropic_api_key", "")).strip() or os.environ.get("ANTHROPIC_API_KEY", "").strip() or None
     ollama_base_url = str(data.get("ollama_base_url", "")).strip() or "http://localhost:11434/v1"
 
-    system_prompt_path = Path(str(data.get("system_prompt_file", "")).strip() or DEFAULT_SYSTEM_PROMPT_PATH).expanduser()
-    system_prompt = _load_system_prompt(system_prompt_path)
+    system_prompt = _load_system_prompt(DEFAULT_SYSTEM_PROMPT_PATH)
 
     raw_library = str(data.get("library_path", "")).strip()
     library_path = Path(raw_library).expanduser().resolve() if raw_library else None
-    index_model = str(data.get("index_model", "")).strip() or "ollama/llama3.2"
+    index_model = str(data.get("index_model", "")).strip() or "claude-haiku-4-5"
 
     user_names = tuple(str(n).strip() for n in data.get("user_names", ["Prompt", "Rodrigo"]) if str(n).strip())
     llm_names  = tuple(str(n).strip() for n in data.get("llm_names",  ["Claude", "GPT"])     if str(n).strip())

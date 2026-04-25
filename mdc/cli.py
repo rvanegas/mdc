@@ -131,9 +131,11 @@ def main(argv: list[str] | None = None) -> int:
                 library_path=args.library_path,
                 refs_only=args.refs_only_all,
                 reprocess_all=args.all,
+                verbose=args.verbose,
             )
         if args.command == "new":
-            return run_new(args.title, edit=args.edit)
+            config = load_config()
+            return run_new(args.title, edit=args.edit, library_path=config.library_path)
         if args.command == "check":
             return run_check(Path(args.path))
         if args.command == "validate":
@@ -188,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mdc",
-        description="Work with mdform-format markdown conversation files.",
+        description="Work with mdc-format markdown conversation files.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -216,11 +218,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Extract references from all documents without calling any AI model.",
     )
+    index_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        default=False,
+        help="Print warnings about unused KEYS.md entries.",
+    )
 
     # new
     new_parser = subparsers.add_parser(
         "new",
-        help="Create a new mdform conversation file in the current directory.",
+        help="Create a new mdc conversation file in the current directory.",
     )
     new_parser.add_argument(
         "-t", "--title",
@@ -243,7 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
     # validate
     validate_parser = subparsers.add_parser(
         "validate",
-        help="Run mdform format rules on one or more files.",
+        help="Run mdc format rules on one or more files.",
     )
     validate_parser.add_argument("paths", nargs="+", metavar="file.md")
     validate_parser.add_argument(
@@ -256,7 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
     # fix
     fix_parser = subparsers.add_parser(
         "fix",
-        help="Auto-fix correctable mdform violations (modifies files in place).",
+        help="Auto-fix correctable mdc format violations (modifies files in place).",
     )
     fix_parser.add_argument("paths", nargs="+", metavar="file.md")
 
@@ -452,15 +460,28 @@ def run_diff(
         baseline, target = pairs[n - 1]
 
     cmd = ["diff", "-u"] + (diff_args or []) + [str(baseline), str(target)]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    output = result.stdout
-    if sys.stdout.isatty() and output:
-        output = _colorize_diff(output)
-    if output:
-        sys.stdout.write(output)
-    if result.stderr:
-        sys.stderr.write(result.stderr)
-    return 0 if result.returncode in (0, 1) else result.returncode
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        output = result.stdout
+        if sys.stdout.isatty() and output:
+            output = _colorize_diff(output)
+        if output:
+            sys.stdout.write(output)
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+        return 0 if result.returncode in (0, 1) else result.returncode
+    except FileNotFoundError:
+        # No system diff (e.g. Windows); fall back to difflib.
+        old_lines = baseline.read_text(encoding="utf-8").splitlines(keepends=True)
+        new_lines = target.read_text(encoding="utf-8").splitlines(keepends=True)
+        output = "".join(
+            difflib.unified_diff(old_lines, new_lines, fromfile=str(baseline), tofile=str(target))
+        )
+        if sys.stdout.isatty() and output:
+            output = _colorize_diff(output)
+        if output:
+            sys.stdout.write(output)
+        return 0
 
 
 def _annotate_voice(
@@ -566,7 +587,7 @@ def _parse_index_reply(text: str) -> tuple[str, list[str]]:
     return summary, terms
 
 
-def run_index(library_path: str | None, refs_only: bool = False, reprocess_all: bool = False) -> int:
+def run_index(library_path: str | None, refs_only: bool = False, reprocess_all: bool = False, verbose: bool = False) -> int:
     import random
     from mdc.library import MANIFEST_FILENAME, build_index
 
@@ -621,6 +642,14 @@ def run_index(library_path: str | None, refs_only: bool = False, reprocess_all: 
                 messages = [{"role": "user", "content": _index_prompt(annotated, word_count)}]
                 reply = client.generate_reply(messages)
                 return _parse_index_reply(reply.text)
+
+    duplicates = {slug: paths for slug, paths in _slug_map(lib_path).items() if len(paths) > 1}
+    if duplicates:
+        print("Warning: duplicate slugs detected in library:")
+        for slug, paths in sorted(duplicates.items()):
+            for p in paths:
+                print(f"  {p.relative_to(lib_path)}")
+        print()
 
     counts: dict[str, int] = {}
     last_status: list[str] = [""]
@@ -777,11 +806,12 @@ def run_index(library_path: str | None, refs_only: bool = False, reprocess_all: 
         if all_pairs:
             print(f"\n  Co-occurrence relations: {len(all_pairs)} found, {len(new_pairs)} new.")
 
-    all_warnings = sanitize_warnings + keys_warnings
-    if all_warnings:
-        print("\nWarnings:")
-        for w in all_warnings:
-            print(f"  ! {w}")
+    if verbose:
+        all_warnings = sanitize_warnings + keys_warnings
+        if all_warnings:
+            print("\nWarnings:")
+            for w in all_warnings:
+                print(f"  ! {w}")
     return 0
 
 
@@ -843,15 +873,38 @@ def _parse_relate_reply(
     return result
 
 
-def run_new(title: str | None, edit: bool = False) -> int:
+def _slug_map(*roots: Path) -> dict[str, list[Path]]:
+    seen: dict[str, list[Path]] = {}
+    visited: set[Path] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        resolved = root.resolve()
+        if resolved in visited:
+            continue
+        visited.add(resolved)
+        for p in root.rglob("*.md"):
+            seen.setdefault(p.stem, []).append(p)
+    return seen
+
+
+def _collect_existing_slugs(extra_root: Path | None) -> set[str]:
+    roots = [Path.cwd()]
+    if extra_root and extra_root.is_dir():
+        roots.append(extra_root)
+    return set(_slug_map(*roots).keys())
+
+
+def run_new(title: str | None, edit: bool = False, library_path: Path | None = None) -> int:
     today = datetime.date.today().isoformat()
+    existing = _collect_existing_slugs(library_path)
     if title is None:
         base = "Untitled"
         candidate = base
         n = 2
         while True:
-            if not Path(f"{today}-{slugify(candidate)}.md").exists():
-                if not edit or not Path(f"{today}-{slugify(candidate + ' (Editor)')}.md").exists():
+            if f"{today}-{slugify(candidate)}" not in existing:
+                if not edit or f"{today}-{slugify(candidate + ' (Editor)')}" not in existing:
                     break
             candidate = f"{base} {n}"
             n += 1
@@ -1047,6 +1100,7 @@ def _run_reply_watch(
             time.sleep(1)
             continue
 
+        print("Change detected, replying...", flush=True)
         try:
             if effective_model.startswith("claude-"):
                 reply_text = _reply_anthropic(transcript, config, path, effective_model,
@@ -1176,7 +1230,7 @@ def _reply_anthropic(
         tools = LIBRARY_TOOLS
 
         try:
-            exclude = str(path.resolve().relative_to(lib.resolve()))
+            exclude = path.resolve().relative_to(lib.resolve()).as_posix()
         except ValueError:
             exclude = None
 

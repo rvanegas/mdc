@@ -1,5 +1,5 @@
 """
-Validate markdown conversation files against the mdform format.
+Validate markdown conversation files against the mdc format.
 With fix_title_section(), corrects title-section infractions that can be repaired automatically.
 
 Format rules:

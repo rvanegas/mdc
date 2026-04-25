@@ -11,7 +11,7 @@ _REFS_HEADING_RE = re.compile(rf"^({_H}) References\s*$", re.MULTILINE)
 _NOTES_HEADING_RE = re.compile(rf"^({_H}) Notes\s*$", re.MULTILINE)
 _RELATED_HEADING_RE = re.compile(rf"^({_H}) Related\s*$", re.MULTILINE)
 _NEXT_HEADING_RE = re.compile(rf"^{_H} ", re.MULTILINE)
-ASSISTANT_NAME = "Claude"  # default for mdform-format transcripts
+ASSISTANT_NAME = "Claude"  # default for mdc-format transcripts
 REFERENCE_LINE_RE = re.compile(r"^\| .+\([^)]+\).+$")
 _REF_TITLE_SPLIT_RE = re.compile(r"(\([^)]+\)\s+)")
 EDIT_DIRECTIVE_RE = re.compile(r"^\[Edit:\s*([^\]]+)\]\s*$", re.MULTILINE)
@@ -65,7 +65,7 @@ class Transcript:
 
 
 def _parse_preamble(text: str) -> Preamble:
-    """Parse the mdform preamble from the text before the first ## heading.
+    """Parse the mdc preamble from the text before the first ## heading.
 
     Expected structure (0-indexed lines):
       lines[0]: blank
@@ -78,7 +78,7 @@ def _parse_preamble(text: str) -> Preamble:
     lines = text.split("\n")
     if len(lines) < 4:
         raise TranscriptError(
-            "File must start with the mdform preamble: blank line, # Title, date (yyyy-mm-dd), blank line."
+            "File must start with the mdc preamble: blank line, # Title, date (yyyy-mm-dd), blank line."
         )
     if lines[0].strip() != "":
         raise TranscriptError(
@@ -111,11 +111,11 @@ def parse_transcript(text: str, assistant_name: str = ASSISTANT_NAME) -> Transcr
     if not matches:
         raise TranscriptError("Transcript must contain at least one '## <Name>' section heading.")
 
-    # The mdform format requires a preamble before the first ## heading.
+    # The mdc format requires a preamble before the first ## heading.
     preamble_text = text[:matches[0].start()]
     if not preamble_text.strip():
         raise TranscriptError(
-            "File must start with the mdform preamble (blank line, # Title, date, blank line) "
+            "File must start with the mdc preamble (blank line, # Title, date, blank line) "
             "before the first '## <Name>' section."
         )
     preamble = _parse_preamble(preamble_text)

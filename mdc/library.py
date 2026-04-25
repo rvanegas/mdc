@@ -577,7 +577,7 @@ def build_index(
             continue
         if re.search(r"--\d+\.md$", md_path.name):
             continue
-        rel_path = str(md_path.relative_to(library_path))
+        rel_path = md_path.relative_to(library_path).as_posix()
 
         existing = entries_by_path.get(rel_path)
         if existing is not None and md_path.stat().st_mtime <= existing.indexed_at:
@@ -732,7 +732,7 @@ def read_document(library_path: Path, rel_path: str, exclude: str | None = None)
     if exclude and rel_path == exclude:
         return f"'{rel_path}' is the document currently being replied to and is not available."
     target = (library_path / rel_path).resolve()
-    if not str(target).startswith(str(library_path.resolve()) + "/"):
+    if not target.is_relative_to(library_path.resolve()):
         return f"Error: path '{rel_path}' is outside the library."
     if not target.exists():
         return f"Error: document '{rel_path}' not found in library."
