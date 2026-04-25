@@ -160,11 +160,14 @@ def main(argv: list[str] | None = None) -> int:
             extra = args.diff_args or []
             if extra and extra[0] == "--":
                 extra = extra[1:]
+            config = load_config()
+            _rev_dir = (config.library_path / "REVISIONS") if config.library_path else None
             return run_diff(
                 Path(args.path),
                 revision=args.revision,
                 delta=args.delta,
                 diff_args=extra or None,
+                revisions_dir=_rev_dir,
             )
         if args.command == "config":
             return run_config()
@@ -401,6 +404,7 @@ def run_diff(
     revision: int | None = None,
     delta: int | None = None,
     diff_args: list[str] | None = None,
+    revisions_dir: Path | None = None,
 ) -> int:
     import re as _re
     import subprocess
@@ -413,14 +417,15 @@ def run_diff(
 
     stem = path.stem
     suffix = path.suffix
-    parent = path.parent
+    rev_dir = revisions_dir if revisions_dir is not None else path.parent
 
     backup_re = _re.compile(rf"^{_re.escape(stem)}--(\d+){_re.escape(suffix)}$")
     revisions: list[tuple[int, Path]] = []
-    for sibling in parent.iterdir():
-        m = backup_re.match(sibling.name)
-        if m:
-            revisions.append((int(m.group(1)), sibling))
+    if rev_dir.is_dir():
+        for entry in rev_dir.iterdir():
+            m = backup_re.match(entry.name)
+            if m:
+                revisions.append((int(m.group(1)), entry))
     revisions.sort(reverse=True)
 
     if not revisions:
@@ -428,7 +433,7 @@ def run_diff(
         return 1
 
     if revision is not None:
-        vpath = parent / f"{stem}--{revision}{suffix}"
+        vpath = rev_dir / f"{stem}--{revision}{suffix}"
         if not vpath.is_file():
             print(f"Error: revision {revision} not found.")
             return 1
@@ -884,6 +889,8 @@ def _slug_map(*roots: Path) -> dict[str, list[Path]]:
             continue
         visited.add(resolved)
         for p in root.rglob("*.md"):
+            if (root / "REVISIONS") in p.parents:
+                continue
             seen.setdefault(p.stem, []).append(p)
     return seen
 
@@ -1118,7 +1125,10 @@ def _run_reply_watch(
                 sys.stdout.write("\n")
             sys.stdout.flush()
 
-            _save_reply(path, text, reply_text, assistant_name, transcript.pending_turn.heading)
+            _rev_dir = (config.library_path / "REVISIONS") if config.library_path else None
+            _save_reply(path, text, reply_text, assistant_name, transcript.pending_turn.heading, revisions_dir=_rev_dir)
+            if _rev_dir:
+                _prune_revisions(_rev_dir, config.revision_retention_days)
             print("OK: reply appended.", flush=True)
         except Exception as exc:
             print(f"Error: {exc}", flush=True)
@@ -1198,7 +1208,10 @@ def run_reply(
         sys.stdout.write("\n")
     sys.stdout.flush()
     status("Appending to transcript...")
-    _save_reply(path, text, reply_text, assistant_name, transcript.pending_turn.heading)
+    _rev_dir = (config.library_path / "REVISIONS") if config.library_path else None
+    _save_reply(path, text, reply_text, assistant_name, transcript.pending_turn.heading, revisions_dir=_rev_dir)
+    if _rev_dir:
+        _prune_revisions(_rev_dir, config.revision_retention_days)
     status(f"Appended one reply to {path}.")
     return 0
 
@@ -1303,8 +1316,9 @@ def _reply_anthropic(
 
     edit_targets = resolve_edit_targets(transcript.preamble)
     if edit_targets:
-        edit_exec = make_edit_executor(edit_targets, wrap_width=config.wrap_width)
-        edit_context = build_edit_context(edit_targets, wrap_width=config.wrap_width)
+        _rev_dir = (config.library_path / "REVISIONS") if config.library_path else None
+        edit_exec = make_edit_executor(edit_targets, wrap_width=config.wrap_width, revisions_dir=_rev_dir)
+        edit_context = build_edit_context(edit_targets, wrap_width=config.wrap_width, revisions_dir=_rev_dir)
         tools = (tools or []) + [EDIT_TOOL]
         prev_exec = tool_executor
         def tool_executor(name: str, inp: dict[str, object]) -> str:  # noqa: E306
@@ -1438,7 +1452,7 @@ def _reply_openai(
     return reply.text
 
 
-def _save_reply(path: Path, text: str, reply_text: str, assistant_name: str, heading: str) -> None:
+def _save_reply(path: Path, text: str, reply_text: str, assistant_name: str, heading: str, revisions_dir: Path | None = None) -> None:
     from mdc.edit_tools import _BACKUP_RE
     body_with_related, new_refs = extract_references(reply_text)
     body, new_related = extract_related(body_with_related)
@@ -1452,14 +1466,26 @@ def _save_reply(path: Path, text: str, reply_text: str, assistant_name: str, hea
         existing_related = list(parse_transcript(updated, assistant_name=assistant_name).related)
         merged_related = existing_related + [r for r in new_related if r not in set(existing_related)]
         updated = update_related_section(updated, merged_related)
-    stem, suffix, parent = path.stem, path.suffix, path.parent
+    stem, suffix = path.stem, path.suffix
+    rev_dir = revisions_dir if revisions_dir is not None else path.parent
     highest = max(
-        (int(m.group(2)) for s in parent.iterdir()
+        (int(m.group(2)) for s in (rev_dir.iterdir() if rev_dir.is_dir() else ())
          if (m := _BACKUP_RE.match(s.name)) and m.group(1) == stem and m.group(3) == suffix),
         default=0,
     )
-    (parent / f"{stem}--{highest + 1}{suffix}").write_text(text, encoding="utf-8")
+    rev_dir.mkdir(parents=True, exist_ok=True)
+    (rev_dir / f"{stem}--{highest + 1}{suffix}").write_text(text, encoding="utf-8")
     path.write_text(updated, encoding="utf-8")
+
+
+def _prune_revisions(rev_dir: Path, days: int) -> None:
+    if not rev_dir.is_dir() or days <= 0:
+        return
+    import time as _time
+    cutoff = _time.time() - days * 86400
+    for entry in rev_dir.iterdir():
+        if entry.is_file() and entry.stat().st_mtime < cutoff:
+            entry.unlink()
 
 
 def _upgrade_reply_headings(text: str) -> str:

@@ -575,6 +575,8 @@ def build_index(
     for md_path in sorted(library_path.rglob("*.md")):
         if md_path.name in (MANIFEST_FILENAME, INDEX_FILENAME, KEYS_FILENAME, REFERENCES_FILENAME, RELATED_FILENAME):
             continue
+        if (library_path / "REVISIONS") in md_path.parents:
+            continue
         if re.search(r"--\d+\.md$", md_path.name):
             continue
         rel_path = md_path.relative_to(library_path).as_posix()

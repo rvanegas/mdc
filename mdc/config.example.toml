@@ -14,6 +14,9 @@ index_model = "claude-haiku-4-5"
 # Column width for paragraph wrapping applied by "mdc fix" and "mdc reply".
 wrap_width = 100
 
+# Revision files older than this many days are deleted after each "mdc reply". Default: 7.
+# revision_retention_days = 7
+
 # Section headings recognized as the user's own voice in transcripts.
 # Used to classify documents during indexing and to validate reply targets.
 # user_names = ["Prompt", "YourName"]
