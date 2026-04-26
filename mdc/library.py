@@ -658,12 +658,25 @@ def render_manifest(entries: list[DocEntry]) -> str:
     return "\n".join(lines)
 
 
-def resolve_title(library_path: Path, title: str) -> str | None:
-    """Resolve a title (or raw Related line such as '| *Title*') to its rel_path via slug matching."""
+_DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-")
+
+
+def _normalize_to_slug(s: str) -> str:
     from mdc.form import slugify
-    target_slug = slugify(title)
+    if s.lower().endswith(".md"):
+        s = s[:-3]
+    s = _DATE_PREFIX_RE.sub("", s)
+    return slugify(s)
+
+
+def resolve_title(library_path: Path, title: str) -> str | None:
+    """Resolve a title, slug (with or without date/extension), or raw Related line to its rel_path."""
+    from mdc.form import slugify
+    query = _normalize_to_slug(title)
     for e in load_entries(library_path):
-        if slugify(e.title) == target_slug:
+        if slugify(e.title) == query:
+            return e.rel_path
+        if _normalize_to_slug(e.rel_path) == query:
             return e.rel_path
     return None
 

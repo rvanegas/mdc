@@ -38,7 +38,7 @@ class _LibraryTermNotFoundError(Exception):
 
 from mdc.assets import build_anthropic_input, build_chat_input, build_response_input, collect_local_assets
 from mdc.config import _default_assistant_name, load_config
-from mdc.form import check_file, check_global_issues, fix_object_replacement, fix_rtl_spans, fix_title_section, slugify
+from mdc.form import check_file, check_global_issues, fix_object_replacement, fix_rtl_spans, fix_section_spacing, fix_title_section, slugify
 from mdc.transcript import (
     TranscriptError,
     append_assistant_reply,
@@ -1010,8 +1010,8 @@ def run_fix(paths: list[Path]) -> int:
         orc_lines, orc_applied = fix_object_replacement(raw.split("\n"))
         rtl_lines, rtl_applied = fix_rtl_spans(orc_lines)
         new_lines, title_applied = fix_title_section(rtl_lines)
-        new_text = "\n".join(new_lines)
-        applied = orc_applied + rtl_applied + title_applied
+        new_text, spacing_applied = fix_section_spacing("\n".join(new_lines))
+        applied = orc_applied + rtl_applied + title_applied + spacing_applied
 
         if applied:
             diff = list(difflib.unified_diff(
@@ -1475,6 +1475,7 @@ def _save_reply(path: Path, text: str, reply_text: str, assistant_name: str, hea
     )
     rev_dir.mkdir(parents=True, exist_ok=True)
     (rev_dir / f"{stem}--{highest + 1}{suffix}").write_text(text, encoding="utf-8")
+    updated, _ = fix_section_spacing(updated)
     path.write_text(updated, encoding="utf-8")
 
 
@@ -1489,8 +1490,8 @@ def _prune_revisions(rev_dir: Path, days: int) -> None:
 
 
 def _upgrade_reply_headings(text: str) -> str:
-    """Promote any ## headings in the reply to ### to avoid colliding with turn delimiters."""
-    return re.sub(r"^##(?!#)", "###", text, flags=re.MULTILINE)
+    """Promote any # or ## headings in the reply to ### to avoid colliding with turn delimiters."""
+    return re.sub(r"^#{1,2}(?!#)", "###", text, flags=re.MULTILINE)
 
 
 def _print_reply_delta(chunk: str) -> None:

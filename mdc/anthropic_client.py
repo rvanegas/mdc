@@ -125,7 +125,7 @@ class AnthropicChatClient:
             for tu in tool_uses:
                 label = format_tool_annotation(tu.name, dict(tu.input)) if format_tool_annotation else f"[{tu.name}]"
                 prefix = "\n\n" if not tool_annotations else "\n"
-                marker = f"{prefix}{label}"
+                marker = f"{prefix}| {label}"
                 if on_delta is not None:
                     on_delta(marker)
                 tool_annotations.append(marker)

@@ -227,6 +227,39 @@ def fix_title_section(lines: list[str]) -> tuple[list[str], list[str]]:
     return lines, fixes
 
 
+def fix_section_spacing(text: str) -> tuple[str, list[str]]:
+    """Ensure exactly one blank line before and after every ## header, and exactly one trailing newline."""
+    fixes: list[str] = []
+
+    new = re.sub(r'\n{3,}(## )', r'\n\n\1', text)
+    if new != text:
+        fixes.append("collapsed extra blank lines before section headers")
+        text = new
+
+    new = re.sub(r'([^\n])\n(## )', r'\1\n\n\2', text)
+    if new != text:
+        fixes.append("added missing blank line before section headers")
+        text = new
+
+    new = re.sub(r'(^## [^\n]*\n)\n+', r'\1\n', text, flags=re.MULTILINE)
+    if new != text:
+        fixes.append("collapsed extra blank lines after section headers")
+        text = new
+
+    new = re.sub(r'(^## [^\n]*\n)([^\n])', r'\1\n\2', text, flags=re.MULTILINE)
+    if new != text:
+        fixes.append("added missing blank line after section headers")
+        text = new
+
+    stripped = text.rstrip('\n')
+    normalized = stripped + '\n'
+    if text != normalized:
+        fixes.append("removed extra trailing newlines" if text.endswith('\n') else "added missing trailing newline")
+        text = normalized
+
+    return text, fixes
+
+
 # ── checker ───────────────────────────────────────────────────────────────────
 
 def check_global_issues(path: Path) -> list[str]:
@@ -356,27 +389,10 @@ def check_file(path: Path) -> list[str]:
             err(idx + 1, "'## ChatGPT': use '## GPT' instead")
             return errors
 
-    # ── 9. blank line immediately after each ## header ────────────────
-    for idx, header in sections:
-        next_idx = idx + 1
-        if next_idx >= n or lines[next_idx].strip() != "":
-            got = repr(lines[next_idx]) if next_idx < n else "'<EOF>'"
-            err(
-                idx + 2,
-                f"expected blank line after '## ...' header, got {got}",
-            )
-            return errors
-
-    # ── 9b. blank line before each section (except the first) ─────────
-    for idx, header in sections[1:]:
-        prev_idx = idx - 1
-        if prev_idx < 0 or lines[prev_idx].strip() != "":
-            got = repr(lines[prev_idx]) if prev_idx >= 0 else "'<BOF>'"
-            err(
-                idx,  # 1-based: the line before the header
-                f"expected blank line before '## {header[3:].strip()}', got {got}",
-            )
-            return errors
+    # ── 9. section spacing (blank lines around headers, trailing newline) ──
+    _, spacing_fixes = fix_section_spacing(raw)
+    for fix in spacing_fixes:
+        errors.append(fix + " — run 'mdc fix' to correct")
 
     # ── 10. Notes/Related/References ordering and position ───────────
     # Required tail order (all optional): Notes → Related → References
