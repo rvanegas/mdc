@@ -160,7 +160,7 @@ def _normalize_initials(term: str) -> str:
 def write_manifest(library_path: Path, entries: list[DocEntry], timestamp: datetime.datetime) -> None:
     lines = [
         "",
-        "# Index",
+        "# Manifest",
         timestamp.replace(microsecond=0).isoformat(),
         "",
         f"{len(entries)} document(s).",
@@ -267,7 +267,7 @@ def write_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
     # Markdown mirror
     relations = load_relations(library_path)
     total = len(inverted)
-    lines = ["", "# Terms", "", f"{total} term(s).", ""]
+    lines = ["", "# Index", "", f"{total} term(s).", ""]
     for term in sorted(inverted, key=str.casefold):
         lines.append(_md_escape(term))
         for f in sorted(inverted[term], key=lambda x: x["rel_path"]):
