@@ -39,6 +39,7 @@ class _LibraryTermNotFoundError(Exception):
 from mdc.assets import build_anthropic_input, build_chat_input, build_response_input, collect_local_assets
 from mdc.config import _default_assistant_name, load_config
 from mdc.form import check_file, check_global_issues, fix_object_replacement, fix_rtl_spans, fix_section_spacing, fix_title_section, slugify
+from mdc.library import load_entries
 from mdc.transcript import (
     TranscriptError,
     append_assistant_reply,
@@ -69,6 +70,57 @@ def _require_md(path: Path) -> int:
         print(f"Error: '{path}' does not have a .md extension.")
         return 1
     return 0
+
+
+def _resolve_path_abbrev(s: str, cwd: Path) -> Path | None:
+    """Resolve a file path argument, expanding abbreviations against the manifest.
+
+    If `s` names an existing file (absolute or relative to cwd), return it.
+    Otherwise treat `s` as a substring to match against the stem of every .md
+    file in `cwd` that appears in the manifest for that directory.  Returns the
+    resolved Path on an unambiguous match, or None after printing an error.
+    """
+    candidate = Path(s)
+    if not candidate.is_absolute():
+        candidate = cwd / s
+    if candidate.exists():
+        return candidate
+
+    abbrev = s.lower()
+    library_path: Path | None = None
+    entries = []
+    try:
+        config = load_config()
+        library_path = config.library_path
+        if library_path is None:
+            raise ValueError("no library_path configured")
+        cwd.relative_to(library_path)  # raises ValueError if cwd is not under library_path
+        entries = load_entries(library_path)
+    except Exception:
+        pass
+
+    if library_path is None:
+        print(f"Error: '{s}' not found.")
+        return None
+
+    matches = [
+        Path(e.rel_path).name
+        for e in entries
+        if abbrev in Path(e.rel_path).stem.lower()
+        and (library_path / e.rel_path).parent == cwd
+        and (library_path / e.rel_path).exists()
+    ]
+    matches.sort()
+
+    if not matches:
+        print(f"Error: '{s}' not found and no manifest documents in '{cwd}' match.")
+        return None
+    if len(matches) == 1:
+        return cwd / matches[0]
+    print(f"Ambiguous abbreviation '{s}' matches multiple files:")
+    for name in matches:
+        print(f"  {name}")
+    return None
 
 
 _SPECIAL_LINE_RE = re.compile(
@@ -137,17 +189,35 @@ def main(argv: list[str] | None = None) -> int:
             config = load_config()
             return run_new(args.title, edit=args.edit, library_path=config.library_path)
         if args.command == "check":
-            return run_check(Path(args.path))
+            path = _resolve_path_abbrev(args.path, Path.cwd())
+            if path is None:
+                return 1
+            return run_check(path)
         if args.command == "validate":
-            return run_validate([Path(p) for p in args.paths], force_transcript=args.transcript)
+            paths = []
+            for p in args.paths:
+                resolved = _resolve_path_abbrev(p, Path.cwd())
+                if resolved is None:
+                    return 1
+                paths.append(resolved)
+            return run_validate(paths, force_transcript=args.transcript)
         if args.command == "fix":
-            return run_fix([Path(p) for p in args.paths])
+            paths = []
+            for p in args.paths:
+                resolved = _resolve_path_abbrev(p, Path.cwd())
+                if resolved is None:
+                    return 1
+                paths.append(resolved)
+            return run_fix(paths)
         if args.command == "reply":
             if args.terms and not args.library:
                 print("Error: -t/--term requires -l/--library.")
                 return 1
+            path = _resolve_path_abbrev(args.path, Path.cwd())
+            if path is None:
+                return 1
             return run_reply(
-                Path(args.path),
+                path,
                 model=args.model,
                 reasoning_effort=args.reasoning_effort,
                 verbose=args.verbose,
@@ -162,8 +232,11 @@ def main(argv: list[str] | None = None) -> int:
                 extra = extra[1:]
             config = load_config()
             _rev_dir = (config.library_path / "REVISIONS") if config.library_path else None
+            path = _resolve_path_abbrev(args.path, Path.cwd())
+            if path is None:
+                return 1
             return run_diff(
-                Path(args.path),
+                path,
                 revision=args.revision,
                 delta=args.delta,
                 diff_args=extra or None,
@@ -172,7 +245,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "config":
             return run_config()
         if args.command == "pdf":
-            return run_pdf(Path(args.path), quiet=args.quiet)
+            path = _resolve_path_abbrev(args.path, Path.cwd())
+            if path is None:
+                return 1
+            return run_pdf(path, quiet=args.quiet)
     except TranscriptError as exc:
         print(f"Error: {exc}")
         return 1
