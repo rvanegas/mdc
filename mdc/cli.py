@@ -39,7 +39,6 @@ class _LibraryTermNotFoundError(Exception):
 from mdc.assets import build_anthropic_input, build_chat_input, build_response_input, collect_local_assets
 from mdc.config import _default_assistant_name, load_config
 from mdc.form import check_file, check_global_issues, fix_object_replacement, fix_rtl_spans, fix_section_spacing, fix_title_section, slugify
-from mdc.library import load_entries
 from mdc.transcript import (
     TranscriptError,
     append_assistant_reply,
@@ -72,12 +71,15 @@ def _require_md(path: Path) -> int:
     return 0
 
 
+_DATED_SLUG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-.+\.md$")
+
+
 def _resolve_path_abbrev(s: str, cwd: Path) -> Path | None:
-    """Resolve a file path argument, expanding abbreviations against the manifest.
+    """Resolve a file path argument, expanding abbreviations.
 
     If `s` names an existing file (absolute or relative to cwd), return it.
-    Otherwise treat `s` as a substring to match against the stem of every .md
-    file in `cwd` that appears in the manifest for that directory.  Returns the
+    Otherwise treat `s` as a case-insensitive substring to match against the
+    stem of every date-slug .md file (YYYY-MM-DD-*.md) in cwd.  Returns the
     resolved Path on an unambiguous match, or None after printing an error.
     """
     candidate = Path(s)
@@ -87,33 +89,14 @@ def _resolve_path_abbrev(s: str, cwd: Path) -> Path | None:
         return candidate
 
     abbrev = s.lower()
-    library_path: Path | None = None
-    entries = []
-    try:
-        config = load_config()
-        library_path = config.library_path
-        if library_path is None:
-            raise ValueError("no library_path configured")
-        cwd.relative_to(library_path)  # raises ValueError if cwd is not under library_path
-        entries = load_entries(library_path)
-    except Exception:
-        pass
-
-    if library_path is None:
-        print(f"Error: '{s}' not found.")
-        return None
-
-    matches = [
-        Path(e.rel_path).name
-        for e in entries
-        if abbrev in Path(e.rel_path).stem.lower()
-        and (library_path / e.rel_path).parent == cwd
-        and (library_path / e.rel_path).exists()
-    ]
-    matches.sort()
+    matches = sorted(
+        p.name
+        for p in cwd.iterdir()
+        if _DATED_SLUG_RE.match(p.name) and abbrev in p.stem.lower()
+    )
 
     if not matches:
-        print(f"Error: '{s}' not found and no manifest documents in '{cwd}' match.")
+        print(f"Error: '{s}' not found.")
         return None
     if len(matches) == 1:
         return cwd / matches[0]
