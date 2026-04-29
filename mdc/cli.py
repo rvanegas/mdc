@@ -71,6 +71,14 @@ def _require_md(path: Path) -> int:
     return 0
 
 
+def _require_bare(s: str) -> int:
+    """Return 1 and print an error if s contains a directory separator, else 0."""
+    if "/" in s:
+        print(f"Error: '{s}' — pass a bare filename, not a path (mdc works in the current directory)")
+        return 1
+    return 0
+
+
 _DATED_SLUG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-.+\.md$")
 
 
@@ -172,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
             config = load_config()
             return run_new(args.title, edit=args.edit, library_path=config.library_path)
         if args.command == "check":
+            if _require_bare(args.path):
+                return 1
             path = _resolve_path_abbrev(args.path, Path.cwd())
             if path is None:
                 return 1
@@ -179,6 +189,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "validate":
             paths = []
             for p in args.paths:
+                if _require_bare(p):
+                    return 1
                 resolved = _resolve_path_abbrev(p, Path.cwd())
                 if resolved is None:
                     return 1
@@ -187,6 +199,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "fix":
             paths = []
             for p in args.paths:
+                if _require_bare(p):
+                    return 1
                 resolved = _resolve_path_abbrev(p, Path.cwd())
                 if resolved is None:
                     return 1
@@ -195,6 +209,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "reply":
             if args.terms and not args.library:
                 print("Error: -t/--term requires -l/--library.")
+                return 1
+            if _require_bare(args.path):
                 return 1
             path = _resolve_path_abbrev(args.path, Path.cwd())
             if path is None:
@@ -215,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
                 extra = extra[1:]
             config = load_config()
             _rev_dir = (config.library_path / "REVISIONS") if config.library_path else None
+            if _require_bare(args.path):
+                return 1
             path = _resolve_path_abbrev(args.path, Path.cwd())
             if path is None:
                 return 1
@@ -227,7 +245,16 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "config":
             return run_config()
+        if args.command == "argue":
+            if _require_bare(args.path):
+                return 1
+            path = _resolve_path_abbrev(args.path, Path.cwd())
+            if path is None:
+                return 1
+            return run_argue(path, verbose=args.verbose)
         if args.command == "pdf":
+            if _require_bare(args.path):
+                return 1
             path = _resolve_path_abbrev(args.path, Path.cwd())
             if path is None:
                 return 1
@@ -423,6 +450,18 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "config",
         help="Show configuration and data file locations.",
+    )
+
+    # argue
+    argue_parser = subparsers.add_parser(
+        "argue",
+        help="Extract a structured argument from a plain document, or submit a companion argument file to dianoia for evaluation.",
+    )
+    argue_parser.add_argument("path", help="Plain document (.md) or companion argument file (<stem>-argument.md).")
+    argue_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Show extra detail.",
     )
 
     return parser
@@ -1110,6 +1149,176 @@ def run_fix(paths: list[Path]) -> int:
             any_errors = True
 
     return 1 if any_errors else 0
+
+
+def run_argue(path: Path, verbose: bool = False) -> int:
+    from mdc.argue import argument_to_markdown, markdown_to_argument
+    from mdc import dianoia_client
+
+    if not path.exists():
+        print(f"Error: '{path}' does not exist.")
+        return 1
+    if _require_md(path):
+        return 1
+
+    text = _read_file(path)
+
+    # Case 2: companion argument file
+    if path.stem.endswith("-argument"):
+        try:
+            args_dict = markdown_to_argument(text)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        print("Submitting to dianoia for evaluation…")
+        try:
+            results = dianoia_client.evaluate(args_dict)
+        except (FileNotFoundError, RuntimeError) as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        _append_evaluation(path, results, verbose)
+        print(f"Evaluation written to {path.name}")
+        return 0
+
+    # Case 1: plain document
+    from mdc.library import is_library_transcript
+    config = load_config()
+    if is_library_transcript(text, config.user_names, config.llm_names):
+        print("Error: mdc argue requires a plain document, not a transcript.")
+        return 1
+    errs = check_global_issues(path)
+    if errs:
+        for e in errs:
+            print(f"  error: {e}")
+        return 1
+
+    print("Extracting argument…")
+    try:
+        args_dict = dianoia_client.extract(text)
+    except (FileNotFoundError, RuntimeError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    try:
+        title, date_str = _read_title_date(text)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    try:
+        companion_text = argument_to_markdown(args_dict, title, date_str)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    companion = path.with_name(path.stem + "-argument.md")
+    companion.write_text(companion_text, encoding="utf-8")
+    _print_argument(args_dict)
+    print(f"\nWritten to {companion.name}. Edit it, then run: mdc argue {companion.name}")
+    return 0
+
+
+def _read_title_date(text: str) -> tuple[str, str]:
+    """Extract title and date from the first few lines of an mdc preamble."""
+    lines = text.splitlines()
+    title: str | None = None
+    date_str: str | None = None
+    for line in lines[:6]:
+        line = line.strip()
+        if line.startswith("# ") and title is None:
+            title = line[2:].strip()
+        elif re.match(r"^\d{4}-\d{2}-\d{2}$", line) and date_str is None:
+            date_str = line
+        if title and date_str:
+            break
+    if not title:
+        raise ValueError("could not find '# Title' in preamble")
+    if not date_str:
+        raise ValueError("could not find date line in preamble")
+    return title, date_str
+
+
+def _print_argument(args_dict: dict) -> None:
+    assumptions = args_dict.get("assumptions", [])
+    argument = args_dict.get("argument", [])
+    if assumptions:
+        print("Assumptions:")
+        for s in assumptions:
+            print(f"  {s['symbol']}: {s['proposition']}")
+    print("Argument:")
+    for s in argument:
+        j = f" (from: {', '.join(s['justifiers'])})" if s.get("justifiers") else ""
+        print(f"  {s['symbol']}{j}: {s['proposition']}")
+
+
+def _append_evaluation(path: Path, results: dict, verbose: bool) -> None:
+    """Append an ## Evaluation section to the companion file."""
+    text = path.read_text(encoding="utf-8")
+    # Remove existing evaluation section if present
+    eval_match = re.search(r"\n## Evaluation\b.*", text, re.DOTALL)
+    if eval_match:
+        text = text[: eval_match.start()]
+    text = text.rstrip("\n") + "\n"
+
+    lines = ["\n## Evaluation\n"]
+    results_by_agent = results.get("results_by_agent", {})
+
+    content_results = results_by_agent.get("content_evaluator", [])
+    for r in content_results:
+        rc = r.get("result_content", {})
+        truth = rc.get("truth_evaluations", [])
+        validity = rc.get("validity_evaluations", [])
+        if truth or validity:
+            lines.append("### Content evaluation\n")
+        for item in sorted(truth, key=lambda x: x.get("symbol", "")):
+            sym = item.get("symbol", "?")
+            val = item.get("truth_value", "?")
+            reasoning = item.get("reasoning", "")
+            lines.append(f"- {sym} truth: {val} — {reasoning}")
+        for item in sorted(validity, key=lambda x: x.get("symbol", "")):
+            sym = item.get("symbol", "?")
+            val = item.get("validity_value", "?")
+            reasoning = item.get("reasoning", "")
+            lines.append(f"- {sym} validity: {val} — {reasoning}")
+        if truth or validity:
+            lines.append("")
+
+    improvement_results = results_by_agent.get("improver", [])
+    for r in improvement_results:
+        recs = r.get("result_content", {}).get("recommendations", [])
+        if recs:
+            lines.append("### Improvement recommendations\n")
+        for rec in recs:
+            impact = rec.get("impact", "")
+            reasoning = rec.get("reasoning", "")
+            lines.append(f"**{impact.capitalize()} impact**: {reasoning}\n")
+            for prop in rec.get("propositions", []):
+                ptype = prop.get("type", "")
+                sym = prop.get("symbol") or "new"
+                text_p = prop.get("proposition", "")
+                lines.append(f"- [{ptype}] {sym}: {text_p}")
+            lines.append("")
+
+    formalizer_results = results_by_agent.get("formalizer", [])
+    for r in formalizer_results:
+        rc = r.get("result_content", {})
+        formalizations = rc.get("formalizations", [])
+        definitions = rc.get("definitions", {})
+        if formalizations:
+            lines.append("### Formalization\n")
+            for f in sorted(formalizations, key=lambda x: x.get("symbol", "")):
+                sym = f.get("symbol", "?")
+                ascii_form = f.get("ascii", "")
+                lines.append(f"- {sym}: `{ascii_form}`")
+            predicates = definitions.get("predicates", [])
+            constants = definitions.get("constants", [])
+            if predicates or constants:
+                lines.append("")
+                for p in predicates:
+                    lines.append(f"  - {p.get('symbol', '?')} = {p.get('value', '')}")
+                for c in constants:
+                    lines.append(f"  - {c.get('symbol', '?')} = {c.get('value', '')}")
+            lines.append("")
+
+    path.write_text(text + "\n".join(lines), encoding="utf-8")
 
 
 def run_pdf(path: Path, quiet: bool = False) -> int:
