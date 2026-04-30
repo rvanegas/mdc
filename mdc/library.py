@@ -579,6 +579,8 @@ def build_index(
             continue
         if re.search(r"--\d+\.md$", md_path.name):
             continue
+        if md_path.name.endswith(".argument.md") or md_path.name.endswith(".session.md"):
+            continue
         rel_path = md_path.relative_to(library_path).as_posix()
 
         existing = entries_by_path.get(rel_path)

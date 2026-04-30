@@ -82,6 +82,11 @@ def _require_bare(s: str) -> int:
 _DATED_SLUG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-.+\.md$")
 
 
+def _primary(companion: Path) -> Path:
+    """Return the primary document path for a companion file (*.argument.md, *.session.md)."""
+    return companion.with_suffix("").with_suffix(".md")
+
+
 def _resolve_path_abbrev(s: str, cwd: Path) -> Path | None:
     """Resolve a file path argument, expanding abbreviations.
 
@@ -100,7 +105,7 @@ def _resolve_path_abbrev(s: str, cwd: Path) -> Path | None:
     matches = sorted(
         p.name
         for p in cwd.iterdir()
-        if _DATED_SLUG_RE.match(p.name) and abbrev in p.stem.lower()
+        if _DATED_SLUG_RE.match(p.name) and len(p.suffixes) == 1 and abbrev in p.stem.lower()
     )
 
     if not matches:
@@ -457,7 +462,7 @@ def build_parser() -> argparse.ArgumentParser:
         "argue",
         help="Extract a structured argument from a plain document, or submit a companion argument file to dianoia for evaluation.",
     )
-    argue_parser.add_argument("path", help="Plain document (.md) or companion argument file (<stem>-argument.md).")
+    argue_parser.add_argument("path", help="Plain document (.md). Extracts argument to <stem>.argument.md if absent, evaluates it if present.")
     argue_parser.add_argument(
         "-v", "--verbose",
         action="store_true",
@@ -1007,10 +1012,7 @@ def run_new(title: str | None, edit: bool = False, library_path: Path | None = N
         base = "Untitled"
         candidate = base
         n = 2
-        while True:
-            if f"{today}-{slugify(candidate)}" not in existing:
-                if not edit or f"{today}-{slugify(candidate + ' (Editor)')}" not in existing:
-                    break
+        while f"{today}-{slugify(candidate)}" in existing:
             candidate = f"{base} {n}"
             n += 1
         title = candidate
@@ -1020,8 +1022,7 @@ def run_new(title: str | None, edit: bool = False, library_path: Path | None = N
         print(f"Error: '{filename}' already exists.")
         return 1
     if edit:
-        editor_title = f"{title} (Editor)"
-        editor_filename = f"{today}-{slugify(editor_title)}.md"
+        editor_filename = f"{today}-{slugify(title)}.session.md"
         editor_path = Path(editor_filename)
         if editor_path.exists():
             print(f"Error: '{editor_filename}' already exists.")
@@ -1031,7 +1032,7 @@ def run_new(title: str | None, edit: bool = False, library_path: Path | None = N
     print(filename)
     if edit:
         editor_path.write_text(
-            f"\n# {editor_title}\n{today}\n\n[Edit: {filename}]\n\n## Prompt\n\n",
+            f"\n# {title}\n{today}\n\n[Edit: {filename}]\n\n## Prompt\n\n",
             encoding="utf-8",
         )
         print(editor_filename)
@@ -1162,11 +1163,12 @@ def run_argue(path: Path, verbose: bool = False) -> int:
         return 1
 
     text = _read_file(path)
+    companion = path.with_suffix(".argument.md")
 
-    # Case 2: companion argument file
-    if path.stem.endswith("-argument"):
+    if companion.exists():
+        # Evaluate: companion exists, submit it to dianoia
         try:
-            args_dict = markdown_to_argument(text)
+            args_dict = markdown_to_argument(companion.read_text(encoding="utf-8"))
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
@@ -1176,11 +1178,11 @@ def run_argue(path: Path, verbose: bool = False) -> int:
         except (FileNotFoundError, RuntimeError) as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
-        _append_evaluation(path, results, verbose)
-        print(f"Evaluation written to {path.name}")
+        _append_evaluation(companion, results, verbose)
+        print(f"Evaluation written to {companion.name}")
         return 0
 
-    # Case 1: plain document
+    # Extract: no companion yet — validate and extract from the primary document
     from mdc.library import is_library_transcript
     config = load_config()
     if is_library_transcript(text, config.user_names, config.llm_names):
@@ -1209,10 +1211,9 @@ def run_argue(path: Path, verbose: bool = False) -> int:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
-    companion = path.with_name(path.stem + "-argument.md")
     companion.write_text(companion_text, encoding="utf-8")
     _print_argument(args_dict)
-    print(f"\nWritten to {companion.name}. Edit it, then run: mdc argue {companion.name}")
+    print(f"\nWritten to {companion.name}. Edit it, then run: mdc argue {path.name}")
     return 0
 
 
@@ -1250,42 +1251,154 @@ def _print_argument(args_dict: dict) -> None:
 
 
 def _append_evaluation(path: Path, results: dict, verbose: bool) -> None:
-    """Append an ## Evaluation section to the companion file."""
+    """Inject formalizations inline; append content/improvement sections."""
+    from typing import cast
+    from mdc.argue import inject_formalizations, markdown_to_argument
+    from mdc.dianoia_results import (
+        ContentEvalResult,
+        FormalEvalResult,
+        FormalizerResult,
+        ImproverResult,
+    )
+
     text = path.read_text(encoding="utf-8")
-    # Remove existing evaluation section if present
-    eval_match = re.search(r"\n## Evaluation\b.*", text, re.DOTALL)
+
+    # Strip existing evaluation sections
+    eval_match = re.search(
+        r"\n## (?:Formal evaluation|Content evaluation|Improvement recommendations)\b.*",
+        text, re.DOTALL,
+    )
     if eval_match:
         text = text[: eval_match.start()]
+
     text = text.rstrip("\n") + "\n"
 
-    lines = ["\n## Evaluation\n"]
     results_by_agent = results.get("results_by_agent", {})
+
+    # Collect formalizer output
+    formalizer_results = results_by_agent.get("formalizer", [])
+    new_formalizations: dict = {}
+    all_definitions: dict = {"predicates": [], "constants": []}
+    for r in formalizer_results:
+        rc = cast(FormalizerResult, r.get("result_content", {}))
+        for f in rc.get("formalizations", []):
+            sym = f.get("symbol")
+            if sym:
+                new_formalizations[sym] = f.get("ascii", "")
+        defs = rc.get("definitions", {})
+        all_definitions["predicates"].extend(defs.get("predicates", []))
+        all_definitions["constants"].extend(defs.get("constants", []))
+
+    # Merge: existing endorsed sub-bullets win over newly generated
+    try:
+        existing = markdown_to_argument(text)
+    except ValueError:
+        existing = {"assumptions": [], "argument": []}
+    endorsed: dict = {}
+    for step in existing.get("assumptions", []) + existing.get("argument", []):
+        form = step.get("formalization") or {}
+        if form.get("endorsed") and form.get("ascii"):
+            endorsed[step["symbol"]] = form["ascii"]
+    by_symbol = {**new_formalizations, **endorsed}
+
+    if by_symbol:
+        text = inject_formalizations(text, by_symbol)
+
+    # When formalizer ran, replace ## Definitions content in-place (un-endorsed predicates
+    # are naturally absent from formalizer output, implementing un-endorsement by omission).
+    # The section header is always preserved; the section is created if absent.
+    if formalizer_results:
+        def_content_lines = []
+        for p in all_definitions["predicates"]:
+            def_content_lines.append(f"- {p.get('symbol', '?')} = {p.get('value', '')}")
+        for c in all_definitions["constants"]:
+            def_content_lines.append(f"- {c.get('symbol', '?')} = {c.get('value', '')}")
+        new_def_content = "\n".join(def_content_lines)
+        # Match the content block between ## Definitions header and next ## section (or end)
+        def_content_match = re.search(
+            r"(## Definitions[^\n]*\n)((?:(?!## ).*\n)*)", text
+        )
+        if def_content_match:
+            replacement = (new_def_content + "\n") if new_def_content else ""
+            text = (
+                text[: def_content_match.start(2)]
+                + replacement
+                + text[def_content_match.end(2):]
+            )
+        else:
+            # No existing section — insert before ## Assumptions or ## Argument
+            section_block = "\n## Definitions\n" + (new_def_content + "\n" if new_def_content else "")
+            insert_match = re.search(r"\n## (?:Assumptions|Argument)\b", text)
+            if insert_match:
+                text = text[: insert_match.start()] + section_block + text[insert_match.start():]
+            else:
+                text = text + section_block
+
+    text = text.rstrip("\n") + "\n"
+    lines = []
+
+    form_eval_results = results_by_agent.get("form_evaluator", [])
+    for r in form_eval_results:
+        rc = cast(FormalEvalResult, r.get("result_content", {}))
+        prop_evals = rc.get("proposition_evaluations", [])
+        arg_validity = rc.get("argument_validity")
+        issues = rc.get("logical_issues", [])
+        recommendations = rc.get("recommendations", [])
+        if prop_evals or issues or arg_validity is not None:
+            lines.append("\n## Formal evaluation\n")
+        for item in sorted(prop_evals, key=lambda x: x.get("symbol", "")):
+            sym = item.get("symbol", "?")
+            val = item.get("validity", "?")
+            reasoning = item.get("reasoning", "")
+            lines.append(f"- {sym} validity: {val} — {reasoning}")
+        if prop_evals:
+            lines.append("")
+        if arg_validity is not None:
+            lines.append(f"- argument validity: {arg_validity}")
+            lines.append("")
+        for issue in issues:
+            lines.append(f"- {issue}")
+        if issues:
+            lines.append("")
+        for rec in recommendations:
+            lines.append(f"- {rec}")
+        if recommendations:
+            lines.append("")
 
     content_results = results_by_agent.get("content_evaluator", [])
     for r in content_results:
-        rc = r.get("result_content", {})
+        rc = cast(ContentEvalResult, r.get("result_content", {}))
         truth = rc.get("truth_evaluations", [])
         validity = rc.get("validity_evaluations", [])
-        if truth or validity:
-            lines.append("### Content evaluation\n")
+        incoherent = rc.get("incoherent_sets", [])
+        if truth or validity or incoherent:
+            lines.append("\n## Content evaluation\n")
         for item in sorted(truth, key=lambda x: x.get("symbol", "")):
             sym = item.get("symbol", "?")
             val = item.get("truth_value", "?")
             reasoning = item.get("reasoning", "")
             lines.append(f"- {sym} truth: {val} — {reasoning}")
+        if truth:
+            lines.append("")
         for item in sorted(validity, key=lambda x: x.get("symbol", "")):
             sym = item.get("symbol", "?")
             val = item.get("validity_value", "?")
             reasoning = item.get("reasoning", "")
             lines.append(f"- {sym} validity: {val} — {reasoning}")
-        if truth or validity:
+        if validity:
+            lines.append("")
+        for item in incoherent:
+            syms = ", ".join(item.get("symbols", []))
+            val = item.get("incoherence_value", "?")
+            lines.append(f"- incoherent ({val}): {syms}")
+        if incoherent:
             lines.append("")
 
     improvement_results = results_by_agent.get("improver", [])
     for r in improvement_results:
-        recs = r.get("result_content", {}).get("recommendations", [])
+        recs = cast(ImproverResult, r.get("result_content", {})).get("recommendations", [])
         if recs:
-            lines.append("### Improvement recommendations\n")
+            lines.append("\n## Improvement recommendations\n")
         for rec in recs:
             impact = rec.get("impact", "")
             reasoning = rec.get("reasoning", "")
@@ -1294,28 +1407,7 @@ def _append_evaluation(path: Path, results: dict, verbose: bool) -> None:
                 ptype = prop.get("type", "")
                 sym = prop.get("symbol") or "new"
                 text_p = prop.get("proposition", "")
-                lines.append(f"- [{ptype}] {sym}: {text_p}")
-            lines.append("")
-
-    formalizer_results = results_by_agent.get("formalizer", [])
-    for r in formalizer_results:
-        rc = r.get("result_content", {})
-        formalizations = rc.get("formalizations", [])
-        definitions = rc.get("definitions", {})
-        if formalizations:
-            lines.append("### Formalization\n")
-            for f in sorted(formalizations, key=lambda x: x.get("symbol", "")):
-                sym = f.get("symbol", "?")
-                ascii_form = f.get("ascii", "")
-                lines.append(f"- {sym}: `{ascii_form}`")
-            predicates = definitions.get("predicates", [])
-            constants = definitions.get("constants", [])
-            if predicates or constants:
-                lines.append("")
-                for p in predicates:
-                    lines.append(f"  - {p.get('symbol', '?')} = {p.get('value', '')}")
-                for c in constants:
-                    lines.append(f"  - {c.get('symbol', '?')} = {c.get('value', '')}")
+                lines.append(f"- {sym} ({ptype}): {text_p}")
             lines.append("")
 
     path.write_text(text + "\n".join(lines), encoding="utf-8")
@@ -1416,6 +1508,12 @@ def run_reply(
 ) -> int:
     if _require_md(path):
         return 1
+
+    # If a session companion exists, reply there instead of the primary document.
+    session = path.with_suffix(".session.md")
+    if session.exists():
+        path = session
+
     if watch:
         return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort, verbose=verbose)
 
