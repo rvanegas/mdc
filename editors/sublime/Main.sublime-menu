@@ -1,0 +1,20 @@
+[
+    {
+        "caption": "Tools",
+        "mnemonic": "T",
+        "id": "tools",
+        "children": [
+            {
+                "caption": "MDC",
+                "children": [
+                    { "caption": "Reply",    "command": "mdc_reply"    },
+                    { "caption": "Fix",      "command": "mdc_fix"      },
+                    { "caption": "Check",    "command": "mdc_check"    },
+                    { "caption": "Validate", "command": "mdc_validate" },
+                    { "caption": "-" },
+                    { "caption": "New Transcript…", "command": "mdc_new" }
+                ]
+            }
+        ]
+    }
+]

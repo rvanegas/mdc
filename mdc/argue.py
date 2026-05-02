@@ -5,10 +5,10 @@ from __future__ import annotations
 import re
 
 
-_ASSUMPTION_RE = re.compile(r"^- ([A-Z])\s*:\s+(.+)$")
-_ARGUMENT_RE = re.compile(r"^- ([A-Z])(?:\s+\(from:\s*([A-Z,\s]+)\))?\s*:\s+(.+)$")
+_ASSUMPTION_RE = re.compile(r"^- (\d+)\s*:\s+(.+)$")
+_ARGUMENT_RE = re.compile(r"^- (\d+)(?:\s+\(from:\s*([\d,\s]+)\))?\s*:\s+(.+)$")
 _DEFINITION_RE = re.compile(r"^- ([A-Za-z]+)\s*=\s*(.+)$")
-_PROP_SYMBOL_RE = re.compile(r"^- ([A-Z])[\s:(]")
+_PROP_SYMBOL_RE = re.compile(r"^- (\d+)[\s:(]")
 
 
 def argument_to_markdown(args_dict: dict, title: str, date_str: str) -> str:
@@ -127,18 +127,35 @@ def inject_formalizations(text: str, by_symbol: dict) -> str:
     return "\n".join(result)
 
 
+_CORE_SECTIONS = {"Definitions", "Assumptions", "Argument"}
+
+
+def extract_core_sections(text: str) -> str:
+    """Return only the preamble and the three core sections of an argument file.
+
+    Discards ## Formal evaluation, ## Content evaluation,
+    ## Improvement recommendations, and any other unknown sections.
+    """
+    # Split on ## headings, keeping the delimiters
+    parts = re.split(r"(?=^## )", text, flags=re.MULTILINE)
+    kept: list[str] = []
+    for part in parts:
+        m = re.match(r"^## (\S+)", part)
+        if m is None:
+            # Preamble (before the first ## heading)
+            kept.append(part)
+        elif m.group(1) in _CORE_SECTIONS:
+            kept.append(part)
+    return "".join(kept)
+
+
 def markdown_to_argument(text: str) -> dict:
     """Parse companion argument markdown back to a dianoia Arguments dict.
 
-    Strips any evaluation sections before parsing.
+    Retains only the preamble and core sections before parsing.
     Raises ValueError on parse failure.
     """
-    eval_match = re.search(
-        r"\n## (?:Formal evaluation|Content evaluation|Improvement recommendations)\b.*",
-        text, re.DOTALL,
-    )
-    if eval_match:
-        text = text[: eval_match.start()]
+    text = extract_core_sections(text)
 
     assumptions: list[dict] = []
     argument: list[dict] = []

@@ -278,6 +278,49 @@ mdc config
 
 ---
 
+## Editor Integration
+
+The `editors/` directory contains plugins for Emacs and Sublime Text. Both auto-activate on any file whose name matches the MDC convention (`yyyy-mm-dd-*.md`).
+
+### Emacs
+
+Add to your init file (`~/.emacs.d/init.el` or `~/.emacs`):
+
+```elisp
+(add-to-list 'load-path "~/src/mdc/editors/emacs")
+(require 'mdc)
+(add-hook 'find-file-hook #'mdc-maybe-enable)
+```
+
+Key bindings (active in `mdc-mode`):
+
+| Key | Command |
+|-----|---------|
+| `C-c C-r` | `mdc reply` |
+| `C-c C-f` | `mdc fix` |
+| `C-c C-k` | `mdc check` |
+| `C-c C-v` | `mdc validate` |
+| `C-c C-n` | New transcript |
+| `M-n` / `M-p` | Next / previous turn |
+
+### Sublime Text
+
+Symlink (or copy) the package directory into Sublime's `Packages` folder, then restart:
+
+```bash
+# macOS
+ln -s ~/src/mdc/editors/sublime \
+      ~/Library/Application\ Support/Sublime\ Text/Packages/mdc
+
+# Linux
+ln -s ~/src/mdc/editors/sublime \
+      ~/.config/sublime-text/Packages/mdc
+```
+
+Commands are available via the command palette (`Cmd+Shift+P`, search `MDC`) and under **Tools → MDC**. Key bindings mirror the Emacs ones (`Ctrl+C, Ctrl+R/F/K/V`); `Alt+↑`/`Alt+↓` navigate between turns.
+
+---
+
 ## Format Rules
 
 Files must satisfy these rules, enforced by `mdc validate` and auto-fixed where possible by `mdc fix`:

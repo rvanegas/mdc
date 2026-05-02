@@ -1,0 +1,8 @@
+{
+    // Path to the mdc executable. "mdc" assumes it is on PATH.
+    "executable": "mdc",
+
+    // When true, the plugin assigns the MDC syntax automatically when it
+    // detects a valid preamble in a .md file.
+    "auto_detect_syntax": true
+}

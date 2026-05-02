@@ -1,0 +1,7 @@
+[
+    { "caption": "MDC: Reply",    "command": "mdc_reply"    },
+    { "caption": "MDC: Fix",      "command": "mdc_fix"      },
+    { "caption": "MDC: Check",    "command": "mdc_check"    },
+    { "caption": "MDC: Validate", "command": "mdc_validate" },
+    { "caption": "MDC: New",      "command": "mdc_new"      }
+]

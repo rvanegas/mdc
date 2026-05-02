@@ -6,19 +6,28 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from mdc.transcript import Preamble, TranscriptError
+from mdc.transcript import TranscriptError
 
+_LOGIC_MD_PATH = Path(__file__).parent / "LOGIC.md"
+_LOGIC_GRAMMAR = _LOGIC_MD_PATH.read_text(encoding="utf-8") if _LOGIC_MD_PATH.is_file() else ""
 
 EDIT_TOOL: dict[str, object] = {
     "name": "edit_file",
     "description": (
-        "Replace old_str with new_str in a file that was declared for editing. "
+        "Replace old_str with new_str in a companion file. "
         "Apply the change immediately. old_str must match exactly (including whitespace)."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "path":    {"type": "string", "description": "Relative path as declared in [Edit: ...]"},
+            "path": {
+                "type": "string",
+                "description": (
+                    "Filename of the companion file. For argument files, only "
+                    "Definitions, Assumptions, and Argument sections are editable; "
+                    "evaluation sections are dianoia output and cannot be edited."
+                ),
+            },
             "old_str": {"type": "string", "description": "Exact text to replace"},
             "new_str": {"type": "string", "description": "Replacement text"},
         },
@@ -33,20 +42,65 @@ Use old_str/new_str that are specific enough to be unambiguous in the file.
 After editing, briefly describe what you changed (one or two sentences).\
 """
 
+_ARGUMENT_FORMAT = """\
+## Argument file format
+
+The user writes the propositions and formalizations. Your role is to help \
+keep everything correctly structured and consistently named — not to supply \
+logical content independently.
+
+**## Definitions** (optional)
+- PREDICATE = semantic description   (uppercase symbol → predicate)
+- constant = semantic description    (lowercase symbol → constant)
+Keep this section in sync with the formalizations: if the user introduces a \
+new predicate or constant in a sub-bullet, add it here. If a symbol is \
+removed from all formalizations, remove it from Definitions.
+
+**## Assumptions**  (one line per premise)
+- A: proposition text
+  - formalization in ASCII logic     (indented two-space sub-bullet)
+
+**## Argument**  (derived steps, each referencing justifiers)
+- B (from: A): proposition text
+  - formalization in ASCII logic
+
+**## Formal evaluation**, **## Content evaluation**, **## Improvement recommendations**
+These sections are generated exclusively by dianoia via `mdc argue`. \
+Do not edit them. Read them as context to understand the current evaluation \
+state of the argument, then focus edits on Definitions, Assumptions, and \
+Argument only.
+
+Formalization sub-bullets are always indented with exactly two spaces. \
+When the user asks you to fix or write a formalization, use only the ASCII \
+grammar specified below and ensure the symbol names match ## Definitions.\
+"""
+
+_TRIAD_NOTE = """\
+The document file contains the prose argument; the argument file captures its \
+logical structure. These files are interdependent: edits to one should remain \
+consistent with the other. When editing the argument file, treat the document \
+as authoritative context for the intended meaning of each proposition. When \
+editing the document, treat the argument structure as a constraint on logical \
+coherence.\
+"""
+
 _BACKUP_RE = re.compile(r"^(.+)--(\d+)(\.[^.]+)$")
 
 
-def resolve_edit_targets(preamble: Preamble) -> list[Path]:
-    """Resolve [Edit: path] strings from the preamble against cwd."""
+def resolve_edit_targets(chat_path: Path) -> list[Path]:
+    """Return companion .document.md and .argument.md files for a .chat.md transcript.
+
+    Both files are optional; only those that exist on disk are returned.
+    Returns an empty list for non-.chat.md files.
+    """
+    if not chat_path.name.endswith(".chat.md"):
+        return []
+    stem = chat_path.name[: -len(".chat.md")]
     targets = []
-    for raw in preamble.edit_targets:
-        p = Path(raw)
-        if p.is_absolute():
-            raise TranscriptError(f"Edit target must be a relative path: {raw}")
-        resolved = p.resolve()
-        if not resolved.is_file():
-            raise TranscriptError(f"Edit target not found: {raw}")
-        targets.append(resolved)
+    for suffix in ("document", "argument"):
+        p = chat_path.parent / f"{stem}.{suffix}.md"
+        if p.is_file():
+            targets.append(p)
     return targets
 
 
@@ -58,7 +112,19 @@ def build_edit_context(targets: list[Path], wrap_width: int = 100, revisions_dir
     that subsequent edit diffs are against the already-wrapped text.
     """
     from mdc.cli import wrap_paragraphs
-    parts = [_EDIT_INSTRUCTIONS, ""]
+
+    has_argument = any(t.name.endswith(".argument.md") for t in targets)
+    has_document = any(t.name.endswith(".document.md") for t in targets)
+
+    parts: list[str] = []
+    if has_argument and has_document:
+        parts += [_TRIAD_NOTE, ""]
+    parts += [_EDIT_INSTRUCTIONS, ""]
+    if has_argument:
+        parts += [_ARGUMENT_FORMAT, ""]
+        if _LOGIC_GRAMMAR:
+            parts += ["## Logic grammar", _LOGIC_GRAMMAR, ""]
+
     for t in targets:
         raw = t.read_text(encoding="utf-8")
         content = wrap_paragraphs(raw, width=wrap_width)

@@ -579,7 +579,7 @@ def build_index(
             continue
         if re.search(r"--\d+\.md$", md_path.name):
             continue
-        if md_path.name.endswith(".argument.md") or md_path.name.endswith(".session.md"):
+        if md_path.name.endswith(".argument.md") or md_path.name.endswith(".chat.md"):
             continue
         rel_path = md_path.relative_to(library_path).as_posix()
 

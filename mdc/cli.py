@@ -83,17 +83,21 @@ _DATED_SLUG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-.+\.md$")
 
 
 def _primary(companion: Path) -> Path:
-    """Return the primary document path for a companion file (*.argument.md, *.session.md)."""
+    """Return the primary document path for a companion file (*.chat.md, *.document.md, *.argument.md)."""
     return companion.with_suffix("").with_suffix(".md")
 
 
-def _resolve_path_abbrev(s: str, cwd: Path) -> Path | None:
+def _resolve_path_abbrev(s: str, cwd: Path, *, secondary_priority: tuple[str, ...] = ()) -> Path | None:
     """Resolve a file path argument, expanding abbreviations.
 
     If `s` names an existing file (absolute or relative to cwd), return it.
     Otherwise treat `s` as a case-insensitive substring to match against the
     stem of every date-slug .md file (YYYY-MM-DD-*.md) in cwd.  Returns the
     resolved Path on an unambiguous match, or None after printing an error.
+
+    `secondary_priority` lists companion suffixes to include (e.g. ``("chat",)``).
+    When multiple companions share a primary stem, the one whose suffix appears
+    earliest in the tuple wins; bare ``.md`` files are always lowest priority.
     """
     candidate = Path(s)
     if not candidate.is_absolute():
@@ -102,11 +106,35 @@ def _resolve_path_abbrev(s: str, cwd: Path) -> Path | None:
         return candidate
 
     abbrev = s.lower()
-    matches = sorted(
+    raw_matches = sorted(
         p.name
         for p in cwd.iterdir()
-        if _DATED_SLUG_RE.match(p.name) and len(p.suffixes) == 1 and abbrev in p.stem.lower()
+        if _DATED_SLUG_RE.match(p.name)
+        and (len(p.suffixes) == 1 or any(p.name.endswith(f".{sec}.md") for sec in secondary_priority))
+        and abbrev in p.stem.lower()
     )
+
+    if secondary_priority:
+        def _sec_rank(name: str) -> int:
+            for i, sec in enumerate(secondary_priority):
+                if name.endswith(f".{sec}.md"):
+                    return i
+            return len(secondary_priority)
+
+        def _primary_stem(name: str) -> str:
+            for sec in secondary_priority:
+                if name.endswith(f".{sec}.md"):
+                    return name[: -len(f".{sec}.md")]
+            return name[:-3]
+
+        by_stem: dict[str, str] = {}
+        for name in raw_matches:
+            stem = _primary_stem(name)
+            if stem not in by_stem or _sec_rank(name) < _sec_rank(by_stem[stem]):
+                by_stem[stem] = name
+        matches = sorted(by_stem.values())
+    else:
+        matches = raw_matches
 
     if not matches:
         print(f"Error: '{s}' not found.")
@@ -217,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             if _require_bare(args.path):
                 return 1
-            path = _resolve_path_abbrev(args.path, Path.cwd())
+            path = _resolve_path_abbrev(args.path, Path.cwd(), secondary_priority=("chat",))
             if path is None:
                 return 1
             return run_reply(
@@ -238,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
             _rev_dir = (config.library_path / "REVISIONS") if config.library_path else None
             if _require_bare(args.path):
                 return 1
-            path = _resolve_path_abbrev(args.path, Path.cwd())
+            path = _resolve_path_abbrev(args.path, Path.cwd(), secondary_priority=("document", "chat", "argument"))
             if path is None:
                 return 1
             return run_diff(
@@ -253,10 +281,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "argue":
             if _require_bare(args.path):
                 return 1
-            path = _resolve_path_abbrev(args.path, Path.cwd())
+            path = _resolve_path_abbrev(args.path, Path.cwd(), secondary_priority=("argument", "document"))
             if path is None:
                 return 1
-            return run_argue(path, verbose=args.verbose)
+            return run_argue(path, verbose=args.verbose, max_props=args.max_props)
         if args.command == "pdf":
             if _require_bare(args.path):
                 return 1
@@ -467,6 +495,13 @@ def build_parser() -> argparse.ArgumentParser:
         "-v", "--verbose",
         action="store_true",
         help="Show extra detail.",
+    )
+    argue_parser.add_argument(
+        "-m", "--max-props",
+        metavar="N",
+        type=int,
+        default=None,
+        help="Maximum total number of propositions passed to dianoia extract.",
     )
 
     return parser
@@ -1016,30 +1051,39 @@ def run_new(title: str | None, edit: bool = False, library_path: Path | None = N
             candidate = f"{base} {n}"
             n += 1
         title = candidate
-    filename = f"{today}-{slugify(title)}.md"
-    path = Path(filename)
-    if path.exists():
-        print(f"Error: '{filename}' already exists.")
-        return 1
+    slug = slugify(title)
     if edit:
-        editor_filename = f"{today}-{slugify(title)}.session.md"
-        editor_path = Path(editor_filename)
-        if editor_path.exists():
-            print(f"Error: '{editor_filename}' already exists.")
+        document_filename = f"{today}-{slug}.document.md"
+        chat_filename = f"{today}-{slug}.chat.md"
+        document_path = Path(document_filename)
+        chat_path = Path(chat_filename)
+        if document_path.exists():
+            print(f"Error: '{document_filename}' already exists.")
             return 1
-    doc_content = f"\n# {title}\n{today}\n\n" if edit else f"\n# {title}\n{today}\n\n## Prompt\n\n"
-    path.write_text(doc_content, encoding="utf-8")
-    print(filename)
-    if edit:
-        editor_path.write_text(
-            f"\n# {title}\n{today}\n\n[Edit: {filename}]\n\n## Prompt\n\n",
+        if chat_path.exists():
+            print(f"Error: '{chat_filename}' already exists.")
+            return 1
+        document_path.write_text(f"\n# {title}\n{today}\n\n", encoding="utf-8")
+        chat_path.write_text(
+            f"\n# {title}\n{today}\n\n## Prompt\n\n",
             encoding="utf-8",
         )
-        print(editor_filename)
-    editor_cmd = os.environ.get("EDITOR")
-    if editor_cmd:
-        files = [str(editor_path), filename] if edit else [filename]
-        subprocess.run([editor_cmd] + files)
+        print(document_filename)
+        print(chat_filename)
+        editor_cmd = os.environ.get("EDITOR")
+        if editor_cmd:
+            subprocess.run([editor_cmd, chat_filename, document_filename])
+    else:
+        filename = f"{today}-{slug}.md"
+        path = Path(filename)
+        if path.exists():
+            print(f"Error: '{filename}' already exists.")
+            return 1
+        path.write_text(f"\n# {title}\n{today}\n\n## Prompt\n\n", encoding="utf-8")
+        print(filename)
+        editor_cmd = os.environ.get("EDITOR")
+        if editor_cmd:
+            subprocess.run([editor_cmd, filename])
     return 0
 
 
@@ -1152,18 +1196,29 @@ def run_fix(paths: list[Path]) -> int:
     return 1 if any_errors else 0
 
 
-def run_argue(path: Path, verbose: bool = False) -> int:
+def run_argue(path: Path, verbose: bool = False, max_props: int | None = None) -> int:
     from mdc.argue import argument_to_markdown, markdown_to_argument
     from mdc import dianoia_client
 
-    if not path.exists():
-        print(f"Error: '{path}' does not exist.")
-        return 1
-    if _require_md(path):
-        return 1
-
-    text = _read_file(path)
-    companion = path.with_suffix(".argument.md")
+    if path.name.endswith(".argument.md"):
+        companion = path
+        path = _primary(path)
+    elif path.name.endswith(".document.md"):
+        if not path.exists():
+            print(f"Error: '{path}' does not exist.")
+            return 1
+        companion = path.with_suffix("").with_suffix(".argument.md")
+    else:
+        if not path.exists():
+            print(f"Error: '{path}' does not exist.")
+            return 1
+        if _require_md(path):
+            return 1
+        # Adopt bare document into the companion model by renaming it.
+        document = path.with_suffix(".document.md")
+        path.rename(document)
+        path = document
+        companion = path.with_suffix("").with_suffix(".argument.md")
 
     if companion.exists():
         # Evaluate: companion exists, submit it to dianoia
@@ -1183,6 +1238,7 @@ def run_argue(path: Path, verbose: bool = False) -> int:
         return 0
 
     # Extract: no companion yet — validate and extract from the primary document
+    text = _read_file(path)
     from mdc.library import is_library_transcript
     config = load_config()
     if is_library_transcript(text, config.user_names, config.llm_names):
@@ -1196,7 +1252,7 @@ def run_argue(path: Path, verbose: bool = False) -> int:
 
     print("Extracting argument…")
     try:
-        args_dict = dianoia_client.extract(text)
+        args_dict = dianoia_client.extract(text, max_props=max_props)
     except (FileNotFoundError, RuntimeError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
@@ -1253,7 +1309,7 @@ def _print_argument(args_dict: dict) -> None:
 def _append_evaluation(path: Path, results: dict, verbose: bool) -> None:
     """Inject formalizations inline; append content/improvement sections."""
     from typing import cast
-    from mdc.argue import inject_formalizations, markdown_to_argument
+    from mdc.argue import extract_core_sections, inject_formalizations, markdown_to_argument
     from mdc.dianoia_results import (
         ContentEvalResult,
         FormalEvalResult,
@@ -1261,15 +1317,7 @@ def _append_evaluation(path: Path, results: dict, verbose: bool) -> None:
         ImproverResult,
     )
 
-    text = path.read_text(encoding="utf-8")
-
-    # Strip existing evaluation sections
-    eval_match = re.search(
-        r"\n## (?:Formal evaluation|Content evaluation|Improvement recommendations)\b.*",
-        text, re.DOTALL,
-    )
-    if eval_match:
-        text = text[: eval_match.start()]
+    text = extract_core_sections(path.read_text(encoding="utf-8"))
 
     text = text.rstrip("\n") + "\n"
 
@@ -1304,10 +1352,11 @@ def _append_evaluation(path: Path, results: dict, verbose: bool) -> None:
     if by_symbol:
         text = inject_formalizations(text, by_symbol)
 
-    # When formalizer ran, replace ## Definitions content in-place (un-endorsed predicates
-    # are naturally absent from formalizer output, implementing un-endorsement by omission).
-    # The section header is always preserved; the section is created if absent.
-    if formalizer_results:
+    # When formalizer ran and produced definitions, replace ## Definitions content in-place
+    # (un-endorsed predicates are naturally absent from formalizer output, implementing
+    # un-endorsement by omission). Skip when formalizer returned early with no new definitions
+    # (all steps already endorsed) so user-supplied definitions are preserved.
+    if formalizer_results and (all_definitions["predicates"] or all_definitions["constants"]):
         def_content_lines = []
         for p in all_definitions["predicates"]:
             def_content_lines.append(f"- {p.get('symbol', '?')} = {p.get('value', '')}")
@@ -1509,10 +1558,10 @@ def run_reply(
     if _require_md(path):
         return 1
 
-    # If a session companion exists, reply there instead of the primary document.
-    session = path.with_suffix(".session.md")
-    if session.exists():
-        path = session
+    # If a chat companion exists, reply there instead of the primary document.
+    chat = path.with_suffix(".chat.md")
+    if chat.exists():
+        path = chat
 
     if watch:
         return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort, verbose=verbose)
@@ -1680,7 +1729,7 @@ def _reply_anthropic(
 
     from mdc.edit_tools import EDIT_TOOL, build_edit_context, make_edit_executor, resolve_edit_targets
 
-    edit_targets = resolve_edit_targets(transcript.preamble)
+    edit_targets = resolve_edit_targets(path)
     if edit_targets:
         _rev_dir = (config.library_path / "REVISIONS") if config.library_path else None
         edit_exec = make_edit_executor(edit_targets, wrap_width=config.wrap_width, revisions_dir=_rev_dir)

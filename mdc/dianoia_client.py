@@ -34,15 +34,18 @@ def _run(args: list[str], input_path: Path) -> dict:
         raise RuntimeError(f"dianoia {args[0]} returned invalid JSON: {e}") from e
 
 
-def extract(text: str) -> dict:
+def extract(text: str, max_props: int | None = None) -> dict:
     """Call `dianoia extract` on text, return Arguments dict."""
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".md", encoding="utf-8", delete=False
     ) as f:
         f.write(text)
         tmp = Path(f.name)
+    cmd = ["extract"]
+    if max_props is not None:
+        cmd += ["-m", str(max_props)]
     try:
-        return _run(["extract"], tmp)
+        return _run(cmd, tmp)
     finally:
         tmp.unlink(missing_ok=True)
 

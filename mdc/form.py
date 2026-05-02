@@ -355,11 +355,12 @@ def check_file(path: Path) -> list[str]:
     date_str = m.group(1)
 
     # ── 4. filename ───────────────────────────────────────────────────
-    expected = f"{date_str}-{slugify(title)}.md"
-    actual = path.name
-    if actual != expected:
-        errors.append(f"filename: expected '{expected}', got '{actual}'")
-        return errors
+    if len(path.suffixes) == 1:
+        expected = f"{date_str}-{slugify(title)}.md"
+        actual = path.name
+        if actual != expected:
+            errors.append(f"filename: expected '{expected}', got '{actual}'")
+            return errors
 
     # ── 5. blank line after date ──────────────────────────────────────
     if n < 4 or lines[3].strip() != "":

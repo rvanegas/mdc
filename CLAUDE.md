@@ -114,6 +114,20 @@ An optional `KEYS.md` in the library directory controls term canonicalization wi
 - **Co-occurrence supplementation** — after the AI pass, term pairs that co-occur as document tags in at least 2 documents are automatically added as related; this catches corpus-specific clustering the model might miss by reasoning from general knowledge rather than the actual library
 - **KEYS.md Alias** — terms aliased to a canonical are resolved before lookup, so a query for an alias navigates to the canonical's relations transparently
 
+## Companion Files
+
+Files without a secondary suffix (`YYYY-MM-DD-slug.md`) are standalone documents with no companions. A document can acquire up to two companions, each identified by a secondary suffix:
+
+| Suffix | Role |
+|---|---|
+| `.document.md` | The prose document being written/edited |
+| `.chat.md` | Chat transcript that drives `mdc reply`; companion `.document.md` and `.argument.md` files are auto-discovered by stem |
+| `.argument.md` | Extracted logical argument produced and evaluated by `mdc argue` |
+
+All three share the same date-slug stem: `YYYY-MM-DD-slug.{suffix}.md`.
+
+The library indexer indexes bare `*.md` files and `*.document.md` files. Chat and argument companions (`.chat.md`, `.argument.md`) are excluded.
+
 ## Writing Assistant
 
 MDC supports a document-editing workflow where the AI reads and rewrites the user's own files rather than just appending replies to the transcript.
@@ -121,19 +135,19 @@ MDC supports a document-editing workflow where the AI reads and rewrites the use
 ### Setup
 
 1. Create a writing session with `mdc new "My Essay" -e`. This produces two files:
-   - `YYYY-MM-DD-my-essay.md` — the document being written/edited
-   - `YYYY-MM-DD-my-essay-editor.md` — the transcript file that drives `mdc reply`
+   - `YYYY-MM-DD-my-essay.document.md` — the document being written/edited
+   - `YYYY-MM-DD-my-essay.chat.md` — the transcript file that drives `mdc reply`
 
-2. The editor file contains `[Edit: YYYY-MM-DD-my-essay.md]` in its preamble. `mdc reply` reads this line, loads the target document into the system prompt, and gives the model an `edit_file` tool.
+2. When `mdc reply` runs against a `.chat.md` file, it automatically discovers any sibling `.document.md` and `.argument.md` files with the same stem, loads them into the system prompt, and gives the model an `edit_file` tool.
 
 ### How it works
 
-- `resolve_edit_targets` (`edit_tools.py`) reads `[Edit: path]` lines from the transcript preamble and resolves them to absolute paths.
+- `resolve_edit_targets` (`edit_tools.py`) discovers companion `.document.md` and `.argument.md` files by stripping the `.chat.md` suffix and checking for siblings with those extensions.
 - `build_edit_context` injects the target files into the system prompt between `--- filename ---` fences, preceded by editing instructions.
 - `make_edit_executor` returns a tool executor for the `edit_file` tool. The tool takes `path`, `old_str`, and `new_str`; the executor does an exact-string replacement and rewrites the file.
 - Before the first edit to a file, a numbered backup is saved automatically (`stem--1.ext`, `stem--2.ext`, …).
 - After each edit the tool returns a unified diff, which the model uses to confirm what changed.
-- `mdc diff <editor-file>` shows the diff between the current document and its most recent backup.
+- `mdc diff <chat-file>` shows the diff between the current document and its most recent backup.
 
 ### Paragraph wrapping
 

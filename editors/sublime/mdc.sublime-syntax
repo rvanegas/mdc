@@ -1,0 +1,110 @@
+%YAML 1.2
+---
+name: MDC Transcript
+file_extensions: []
+scope: text.mdc
+
+# MDC-format markdown conversation transcripts.
+# Auto-assigned by the plugin when the preamble is detected;
+# not tied to a file extension because .md is already claimed by Markdown.
+
+contexts:
+  main:
+    - include: preamble
+    - include: section-header
+    - include: reference-line
+    - include: note-line
+    - include: markdown-block
+    - include: markdown-inline
+
+  # ── Preamble (title, date, optional edit directives) ──────────────────────
+
+  preamble:
+    - match: '^(# )(.+)$'
+      captures:
+        1: punctuation.definition.heading.1.mdc
+        2: entity.name.section.mdc markup.heading.1.mdc
+    - match: '^(\d{4}-\d{2}-\d{2})$'
+      scope: constant.other.date.mdc
+
+  # ── Section headers ────────────────────────────────────────────────────────
+
+  section-header:
+    - match: '^(## )(.+)$'
+      captures:
+        1: punctuation.definition.heading.2.mdc
+        2: entity.name.section.speaker.mdc markup.heading.2.mdc
+
+  # ── Reference and note lines ───────────────────────────────────────────────
+
+  reference-line:
+    - match: '^(\| )(.+?)(\s+\([^)]+\)\s+)(\*.+\*)(.*)$'
+      captures:
+        1: punctuation.definition.list.table.mdc
+        2: entity.name.author.mdc
+        3: constant.other.year.mdc
+        4: markup.italic.mdc string.other.title.mdc
+        5: meta.reference.mdc
+    - match: '^(\| )(.+?)(\s+\([^)]+\)\s+)(.+)$'
+      captures:
+        1: punctuation.definition.list.table.mdc
+        2: entity.name.author.mdc
+        3: constant.other.year.mdc
+        4: string.other.title.mdc
+
+  note-line:
+    - match: '^(\| )(\[\d+\])(.+)$'
+      captures:
+        1: punctuation.definition.list.table.mdc
+        2: constant.numeric.mdc
+        3: comment.mdc
+
+  # ── Markdown block-level elements ──────────────────────────────────────────
+
+  markdown-block:
+    - match: '^(```|~~~)(\w*)$'
+      captures:
+        1: punctuation.definition.raw.code-fence.mdc
+        2: constant.other.language-name.mdc
+      push:
+        - meta_scope: markup.raw.block.mdc
+        - match: '^\1$'
+          captures:
+            0: punctuation.definition.raw.code-fence.mdc
+          pop: true
+        - match: '.+'
+          scope: markup.raw.block.mdc
+    - match: '^(    |\t).+$'
+      scope: markup.raw.block.mdc
+    - match: '^(#{3,6} )(.+)$'
+      captures:
+        1: punctuation.definition.heading.mdc
+        2: markup.heading.mdc
+    - match: '^([-*+] |\d+\. ).+$'
+      captures:
+        1: punctuation.definition.list.mdc
+      scope: markup.list.mdc
+    - match: '^> .+$'
+      scope: markup.quote.mdc
+    - match: '^---+$|^\*\*\*+$'
+      scope: punctuation.separator.thematic-break.mdc
+
+  # ── Markdown inline elements ───────────────────────────────────────────────
+
+  markdown-inline:
+    - match: '\*\*\*(?=\S)(.+?)(?<=\S)\*\*\*'
+      scope: markup.bold.italic.mdc
+    - match: '\*\*(?=\S)(.+?)(?<=\S)\*\*'
+      scope: markup.bold.mdc
+    - match: '\*(?=\S)(.+?)(?<=\S)\*'
+      scope: markup.italic.mdc
+    - match: '`[^`\n]+`'
+      scope: markup.raw.inline.mdc
+    - match: '\[([^\]]+)\]\(([^)]+)\)'
+      captures:
+        1: markup.underline.link.mdc
+        2: string.other.link.mdc markup.underline.link.mdc
+    - match: '\[([^\]]+)\]\[([^\]]*)\]'
+      captures:
+        1: markup.underline.link.mdc
+        2: constant.other.reference.link.mdc
