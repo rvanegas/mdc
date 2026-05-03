@@ -1358,10 +1358,13 @@ def _append_evaluation(path: Path, results: dict, verbose: bool) -> None:
     # (all steps already endorsed) so user-supplied definitions are preserved.
     if formalizer_results and (all_definitions["predicates"] or all_definitions["constants"]):
         def_content_lines = []
-        for p in all_definitions["predicates"]:
-            def_content_lines.append(f"- {p.get('symbol', '?')} = {p.get('value', '')}")
         for c in all_definitions["constants"]:
             def_content_lines.append(f"- {c.get('symbol', '?')} = {c.get('value', '')}")
+        for p in all_definitions["predicates"]:
+            sym = p.get('symbol', '?')
+            arity = p.get('arity', 0)
+            label = f"{sym}/{arity}" if arity else sym
+            def_content_lines.append(f"- {label} = {p.get('value', '')}")
         new_def_content = "\n".join(def_content_lines)
         # Match the content block between ## Definitions header and next ## section (or end)
         def_content_match = re.search(

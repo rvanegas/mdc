@@ -34,10 +34,13 @@ def argument_to_markdown(args_dict: dict, title: str, date_str: str) -> str:
         constants = definitions.get("constants", [])
         if predicates or constants:
             lines.append("## Definitions")
-            for p in predicates:
-                lines.append(f"- {p.get('symbol', '?')} = {p.get('value', '')}")
             for c in constants:
                 lines.append(f"- {c.get('symbol', '?')} = {c.get('value', '')}")
+            for p in predicates:
+                sym = p.get('symbol', '?')
+                arity = p.get('arity', 0)
+                label = f"{sym}/{arity}" if arity else sym
+                lines.append(f"- {label} = {p.get('value', '')}")
             lines.append("")
 
     if assumptions:
