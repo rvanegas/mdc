@@ -13,14 +13,14 @@ The alphabet is partitioned so each symbol kind occupies a non-overlapping range
 | Kind      | ASCII example | JSON `"type"`  | Canonical names                                   | Overflow              |
 |-----------|---------------|----------------|---------------------------------------------------|-----------------------|
 | Variable  | `x`           | `"variable"`   | `x y z u v w`                                     | none (max 6)          |
-| Constant  | `a`           | `"constant"`   | `a b c d e f`                                     | `a1–f1`, `a2–f2`, ... |
-| Predicate | `P`           | `"predicate"`  | `P Q R S T G H I J K L M N O`                     | `P1–O1`, `P2–O2`, ... |
+| Constant  | `a`           | `"constant"`   | `a b c d e f`                                     | `a1-f1`, `a2-f2`, ... |
+| Predicate | `P`           | `"predicate"`  | `P Q R S T G H I J K L M N O`                     | `P1-O1`, `P2-O2`, ... |
 
-**Variables** (`u–z`, enumerated x, y, z, u, v, w): bound by quantifiers; at most 6 per formula.
+**Variables** (`u-z`, enumerated x, y, z, u, v, w): bound by quantifiers; at most 6 per formula.
 
-**Constants** (`a–f`): individual objects; 6 base slots, then suffixed (`a1`, `b1`, ...).
+**Constants** (`a-f`): individual objects; 6 base slots, then suffixed (`a1`, `b1`, ...).
 
-**Predicates** (`G–T`, enumerated P, Q, R, S, T, G, H, I, J, K, L, M, N, O): 14 base slots, then suffixed (`P1`, `Q1`, ...).
+**Predicates** (`G-T`, enumerated P, Q, R, S, T, G, H, I, J, K, L, M, N, O): 14 base slots, then suffixed (`P1`, `Q1`, ...).
 
 ---
 
@@ -64,7 +64,7 @@ JSON:  {
 
 ### Connectives
 
-Negation, conjunction, disjunction, and implication are all connectives. The `op` value doubles as the ASCII token. `not` takes one argument; the binary connectives take two. Parentheses are added only when required by precedence.
+Negation, conjunction, disjunction, implication, and biconditional are all connectives. The `op` value doubles as the ASCII token. `not` takes one argument; the binary connectives take two. Parentheses are added only when required by precedence.
 
 ```
 ASCII: not P(x)
@@ -86,6 +86,11 @@ JSON:  {
 ```
 ASCII: P(a) implies Q(a)
 JSON:  {"type": "connective", "op": "implies", "args": [..., ...]}
+```
+
+```
+ASCII: P(a) equiv Q(a)
+JSON:  {"type": "connective", "op": "equiv", "args": [..., ...]}
 ```
 
 ### Quantifiers
@@ -142,10 +147,11 @@ Higher number binds more tightly. Within the same level, `and`/`or` are left-ass
 
 | Level | Operators                        | Note                |
 |-------|----------------------------------|---------------------|
-| 4     | `not`                            | unary               |
-| 3     | `and`                            | left-assoc          |
-| 2     | `or`                             | left-assoc          |
-| 1     | `implies`                        | right-assoc         |
+| 5     | `not`                            | unary               |
+| 4     | `and`                            | left-assoc          |
+| 3     | `or`                             | left-assoc          |
+| 2     | `implies`                        | right-assoc         |
+| 1     | `equiv`                          | left-assoc          |
 | 0     | `nec`, `pos`, `forall`, `exists` | scope extends right |
 
 Parentheses in ASCII are emitted only when required by these rules.
@@ -168,16 +174,16 @@ term_list  ::= term ("," term)*
 identity   ::= term "=" term
 
 connective ::= "not" formula
-             | formula ("and" | "or" | "implies") formula
+             | formula ("and" | "or" | "implies" | "equiv") formula
 
 quantifier ::= ("forall" | "exists") VAR "." formula
 
 modal      ::= ("nec" | "pos") formula
 
 term     ::= VAR | CONST
-VAR      ::= "x" | "y" | "z" | "u" | "v" | "w"        -- u–z, enumerated from x
-CONST    ::= "a"..."f" | "a1"..."f1" | ...            -- a–f
-NAME     ::= "P"..."O" | "P1"..."O1" | ...            -- G–T, enumerated from P
+VAR      ::= "x" | "y" | "z" | "u" | "v" | "w"        -- u-z, enumerated from x
+CONST    ::= "a"..."f" | "a1"..."f1" | ...            -- a-f
+NAME     ::= "P"..."O" | "P1"..."O1" | ...            -- G-T, enumerated from P
 ```
 
 ---
@@ -188,11 +194,11 @@ NAME     ::= "P"..."O" | "P1"..."O1" | ...            -- G–T, enumerated from 
 |----------------|-----------------------------------------------------------------------------|-----------------------------------------------------------------------|
 | `"predicate"`  | `name: string`, `args: term[]`                                              | empty `args` omits parens in ASCII                                    |
 | `"identity"`   | `left: term`, `right: term`                                                 |                                                                       |
-| `"connective"` | `op: "not"\|"and"\|"or"\|"implies"`, `args: formula[]`                      | `not` takes 1; others take 2                                          |
+| `"connective"` | `op: "not"\|"and"\|"or"\|"implies"\|"equiv"`, `args: formula[]`             | `not` takes 1; others take 2                                          |
 | `"quantifier"` | `quant: "forall"\|"exists"`, `var: term{type:"variable"}`, `body: formula`  |                                                                       |
 | `"modal"`      | `mod: "nec"\|"pos"`, `body: formula`                                        |                                                                       |
 | `"variable"`   | `name: string`                                                              | canonical: `x y z u v w`; used inside `args`, `var`, `left`, `right`  |
-| `"constant"`   | `name: string`                                                              | canonical: `a–f`; used inside `args`, `left`, `right`                 |
+| `"constant"`   | `name: string`                                                              | canonical: `a-f`; used inside `args`, `left`, `right`                 |
 
 ---
 
@@ -239,9 +245,9 @@ forall x. pos P(x) and x = a
 The `formalization_normalizer` replaces semantic names (e.g. `is_mortal`, `socrates`)
 with canonical symbols before storing or displaying a formalization:
 
-- **Predicates** → `P`, `Q`, `R`, `S`, `T`, `G`, `H`, `I`, ... (G–T range, enumerated from P) in first-appearance order across all steps.
-- **Constants** → `a`, `b`, `c`, ... `f` (a–f range) in first-appearance order.
-- **Bound variables** → `x`, `y`, `z`, `u`, `v`, `w` in DFS quantifier order, independently per formula.
+- **Predicates** -> `P`, `Q`, `R`, `S`, `T`, `G`, `H`, `I`, ... (G-T range, enumerated from P) in first-appearance order across all steps.
+- **Constants** -> `a`, `b`, `c`, ... `f` (a-f range) in first-appearance order.
+- **Bound variables** -> `x`, `y`, `z`, `u`, `v`, `w` in DFS quantifier order, independently per formula.
 
 The `ascii` field in stored formalizations is always regenerated from the normalized JSON tree,
 never taken verbatim from the model output.
