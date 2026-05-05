@@ -284,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
             path = _resolve_path_abbrev(args.path, Path.cwd(), secondary_priority=("argument", "document"))
             if path is None:
                 return 1
-            return run_argue(path, verbose=args.verbose, max_props=args.max_props)
+            return run_argue(path, verbose=args.verbose, max_props=args.max_props, step=args.step)
         if args.command == "pdf":
             if _require_bare(args.path):
                 return 1
@@ -502,6 +502,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Maximum total number of propositions passed to dianoia extract.",
+    )
+    argue_parser.add_argument(
+        "step",
+        nargs="?",
+        default=None,
+        metavar="STEP",
+        help="Evaluate only this step and its direct justifiers (requires companion .argument.md).",
     )
 
     return parser
@@ -1196,7 +1203,7 @@ def run_fix(paths: list[Path]) -> int:
     return 1 if any_errors else 0
 
 
-def run_argue(path: Path, verbose: bool = False, max_props: int | None = None) -> int:
+def run_argue(path: Path, verbose: bool = False, max_props: int | None = None, step: str | None = None) -> int:
     from mdc.argue import argument_to_markdown, markdown_to_argument
     from mdc import dianoia_client
 
@@ -1229,7 +1236,7 @@ def run_argue(path: Path, verbose: bool = False, max_props: int | None = None) -
             return 1
         print("Submitting to dianoia for evaluation…")
         try:
-            results = dianoia_client.evaluate(args_dict)
+            results = dianoia_client.evaluate(args_dict, step=step)
         except (FileNotFoundError, RuntimeError) as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
@@ -1238,6 +1245,8 @@ def run_argue(path: Path, verbose: bool = False, max_props: int | None = None) -
         return 0
 
     # Extract: no companion yet — validate and extract from the primary document
+    if step:
+        print("Warning: --step ignored during extraction", file=sys.stderr)
     text = _read_file(path)
     from mdc.library import is_library_transcript
     config = load_config()

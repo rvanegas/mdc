@@ -50,7 +50,7 @@ def extract(text: str, max_props: int | None = None) -> dict:
         tmp.unlink(missing_ok=True)
 
 
-def evaluate(args: dict) -> dict:
+def evaluate(args: dict, step: str | None = None) -> dict:
     """Call `dianoia evaluate` on an Arguments dict, return results dict.
 
     Progress messages from the agent run are forwarded to stderr in real time.
@@ -62,8 +62,9 @@ def evaluate(args: dict) -> dict:
         tmp = Path(f.name)
     try:
         exe = _dianoia_exe()
+        step_args = ["--step", step] if step is not None else []
         proc = subprocess.Popen(
-            [exe, "evaluate", str(tmp)],
+            [exe, "evaluate"] + step_args + [str(tmp)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
