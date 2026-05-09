@@ -192,6 +192,7 @@ def build_anthropic_input(
     system_prompt: str,
     transcript_path: Path,
     library_context: str | None = None,
+    resolve_file_id: Callable[[LocalAssetReference], str] | None = None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """Build (system_blocks, messages) in Anthropic API format from a transcript."""
     assets_by_turn = collect_local_assets(transcript, transcript_path)
@@ -219,8 +220,9 @@ def build_anthropic_input(
             {"type": "text", "text": f"{turn.speaker}:\n{turn.content.strip()}"}
         ]
         for asset in assets_by_turn.get(index, ()):
+            file_id = resolve_file_id(asset) if resolve_file_id is not None else None
             use_cache = cache_slots > 0
-            content_parts.extend(_build_anthropic_asset_parts(asset, cache=use_cache))
+            content_parts.extend(_build_anthropic_asset_parts(asset, cache=use_cache, file_id=file_id))
             if use_cache:
                 cache_slots -= 1
 
@@ -281,7 +283,7 @@ def _build_chat_asset_parts(asset: LocalAssetReference) -> list[dict[str, object
     raise AssertionError(f"Unexpected asset kind: {asset.kind}")
 
 
-def _build_anthropic_asset_parts(asset: LocalAssetReference, cache: bool = True) -> list[dict[str, object]]:
+def _build_anthropic_asset_parts(asset: LocalAssetReference, cache: bool = True, file_id: str | None = None) -> list[dict[str, object]]:
     descriptor: dict[str, object] = {"type": "text", "text": f"Local attachment: {asset.raw_target}"}
     cc: dict[str, object] = {"cache_control": _CACHE_CONTROL} if cache else {}
     if asset.kind in ("markdown", "text", "rtf"):
@@ -291,6 +293,8 @@ def _build_anthropic_asset_parts(asset: LocalAssetReference, cache: bool = True)
             {"type": "text", "text": f"--- Begin {asset.path.name} ---\n{text.strip()}\n--- End {asset.path.name} ---", **cc},
         ]
     if asset.kind == "image":
+        if file_id is not None:
+            return [descriptor, {"type": "image", "source": {"type": "file", "file_id": file_id}, **cc}]
         media_type = IMAGE_MEDIA_TYPES[asset.path.suffix.lower()]
         data = base64.b64encode(asset.path.read_bytes()).decode("ascii")
         return [
@@ -298,6 +302,8 @@ def _build_anthropic_asset_parts(asset: LocalAssetReference, cache: bool = True)
             {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}, **cc},
         ]
     if asset.kind == "pdf":
+        if file_id is not None:
+            return [descriptor, {"type": "document", "source": {"type": "file", "file_id": file_id}, **cc}]
         data = base64.b64encode(asset.path.read_bytes()).decode("ascii")
         return [
             descriptor,

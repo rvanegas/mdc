@@ -27,6 +27,26 @@ from pathlib import Path
 
 KNOWN_LLMS = {"Claude", "GPT"}
 
+# Bare speaker labels that should be promoted to ## headers.
+_BARE_HEADERS: dict[str, str] = {
+    "Prompt:": "## Prompt",
+    "ChatGPT:": "## GPT",
+    "Response:": "## GPT",
+    "References:": "## References",
+}
+_BARE_LABELS: frozenset[str] = frozenset(_BARE_HEADERS)
+_BARE_LABEL_HINT = "use '## Prompt' / '## GPT' (also for 'Response:') / '## References' instead"
+
+
+def _scan_bare_labels(lines: list[str]) -> list[tuple[int, str]]:
+    """Return (lineno, message) pairs for every bare-label line."""
+    out: list[tuple[int, str]] = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped in _BARE_LABELS:
+            out.append((i + 1, f"bare label '{stripped}' — {_BARE_LABEL_HINT}"))
+    return out
+
 # ── RTL span encoding ─────────────────────────────────────────────────────────
 
 # Matches pandoc-style [char]{dir="rtl"} spans that some converters emit.
@@ -217,7 +237,6 @@ def fix_title_section(lines: list[str]) -> tuple[list[str], list[str]]:
             fixes.append(f"replaced '## ChatGPT' with '## GPT' on line {i + 1}")
 
     # ── fix 5: bare labels → ## headers ──────────────────────────────
-    _BARE_HEADERS = {"Prompt:": "## Prompt", "ChatGPT:": "## GPT", "References:": "## References"}
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped in _BARE_HEADERS:
@@ -287,10 +306,8 @@ def check_global_issues(path: Path) -> list[str]:
         if _RTL_SPAN_RE.search(line):
             err(i + 1, 'contains [char]{dir="rtl"} encoding — run \'mdc fix\' to replace with plain ASCII')
 
-    _BARE_LABELS = {"Prompt:", "ChatGPT:", "References:"}
-    for i, line in enumerate(lines):
-        if line.strip() in _BARE_LABELS:
-            err(i + 1, f"bare label '{line.strip()}' — use '## Prompt' / '## GPT' / '## References' instead")
+    for lineno, msg in _scan_bare_labels(lines):
+        err(lineno, msg)
 
     return errors
 
@@ -326,10 +343,8 @@ def check_file(path: Path) -> list[str]:
             err(i + 1, 'contains [char]{dir="rtl"} encoding — run \'mdc fix\' to replace with plain ASCII')
 
     # ── bare speaker labels (whole-file scan) ─────────────────────────
-    _BARE_LABELS = {"Prompt:", "ChatGPT:", "References:"}
-    for i, line in enumerate(lines):
-        if line.strip() in _BARE_LABELS:
-            err(i + 1, f"bare label '{line.strip()}' — use '## Prompt' / '## GPT' / '## References' instead")
+    for lineno, msg in _scan_bare_labels(lines):
+        err(lineno, msg)
 
     # ── 1. blank first line ───────────────────────────────────────────
     if n < 1 or lines[0].strip() != "":

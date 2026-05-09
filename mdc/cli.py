@@ -1041,10 +1041,10 @@ def _slug_map(*roots: Path) -> dict[str, list[Path]]:
 
 
 def _collect_existing_slugs(extra_root: Path | None) -> set[str]:
-    roots = [Path.cwd()]
+    slugs = {p.stem for p in Path.cwd().glob("*.md")}
     if extra_root and extra_root.is_dir():
-        roots.append(extra_root)
-    return set(_slug_map(*roots).keys())
+        slugs |= set(_slug_map(extra_root).keys())
+    return slugs
 
 
 def run_new(title: str | None, edit: bool = False, library_path: Path | None = None) -> int:
@@ -1709,7 +1709,7 @@ def _reply_anthropic(
         if preloaded:
             library_context += "\n\nPre-looked-up Personal Library terms:\n\n" + "\n\n".join(preloaded)
         if related_summaries:
-            library_context += "\n\nThe following Personal Library documents are already known to be relevant to this transcript. Use their index terms as starting points for lookup_term to discover adjacent material before composing your reply:\n\n" + "\n\n".join(related_summaries)
+            library_context += "\n\nThe following Personal Library documents are already known to be relevant to this transcript. If the conversation asks you to read them, call read_document on each before composing your reply. You may also use their index terms as starting points for lookup_term to discover adjacent material:\n\n" + "\n\n".join(related_summaries)
 
         missing_terms: list[str] = []
 
@@ -1773,21 +1773,70 @@ def _reply_anthropic(
         return f"[{tool_name}]"
 
     client = AnthropicChatClient(model=model, api_key=config.anthropic_api_key)
-    for assets in collect_local_assets(transcript, path).values():
+
+    assets_by_turn = collect_local_assets(transcript, path)
+    has_binary_assets = any(
+        a.kind in ("image", "pdf")
+        for assets in assets_by_turn.values()
+        for a in assets
+    )
+    cache_hit_assets: dict[object, object] = {}
+
+    def build_inputs() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        cache_hit_assets.clear()
+
+        def resolve_file_id(asset) -> str:
+            resolved = client.ensure_asset_file(asset)
+            if resolved.cache_hit:
+                cache_hit_assets[asset.path] = asset
+                status(f"Asset cache hit: {asset.raw_target}")
+            else:
+                status(f"Asset uploaded: {asset.raw_target}")
+            return resolved.file_id
+
+        return build_anthropic_input(
+            transcript, config.system_prompt, path,
+            library_context=library_context,
+            resolve_file_id=resolve_file_id if has_binary_assets else None,
+        )
+
+    for assets in assets_by_turn.values():
         for asset in assets:
-            status(f"Sending asset: {asset.raw_target}")
-    system, messages = build_anthropic_input(transcript, config.system_prompt, path, library_context=library_context)
+            if asset.kind not in ("image", "pdf"):
+                status(f"Sending asset: {asset.raw_target}")
+
+    system, messages = build_inputs()
     status(f"Requesting reply from Anthropic model '{model}'...")
     status("Streaming reply:")
-    reply = client.generate_reply(
-        system, messages,
-        on_delta=_print_reply_delta,
-        reasoning_effort=reasoning_effort,
-        tools=tools,
-        tool_executor=tool_executor,
-        post_batch=post_batch if library else None,
-        format_tool_annotation=_format_tool_annotation,
-    )
+    try:
+        reply = client.generate_reply(
+            system, messages,
+            on_delta=_print_reply_delta,
+            reasoning_effort=reasoning_effort,
+            tools=tools,
+            tool_executor=tool_executor,
+            post_batch=post_batch if library else None,
+            format_tool_annotation=_format_tool_annotation,
+            use_files_api=has_binary_assets,
+        )
+    except Exception as exc:
+        if not cache_hit_assets or not _is_retriable_anthropic_asset_error(exc):
+            raise
+        status("Cached Anthropic asset expired or was deleted; retrying with fresh upload(s)...")
+        for asset in cache_hit_assets.values():
+            client.invalidate_asset_file(asset)
+        system, messages = build_inputs()
+        status("Streaming reply:")
+        reply = client.generate_reply(
+            system, messages,
+            on_delta=_print_reply_delta,
+            reasoning_effort=reasoning_effort,
+            tools=tools,
+            tool_executor=tool_executor,
+            post_batch=post_batch if library else None,
+            format_tool_annotation=_format_tool_annotation,
+            use_files_api=has_binary_assets,
+        )
     if verbose:
         _print_anthropic_usage(model, reply)
     return reply.text
@@ -1850,7 +1899,7 @@ def _reply_openai(
 
         messages = build_response_input(
             transcript,
-            system_prompt,
+            config.system_prompt,
             path,
             resolve_file_id=resolve_asset_file_id,
         )
@@ -1914,6 +1963,14 @@ def _prune_revisions(rev_dir: Path, days: int) -> None:
     for entry in rev_dir.iterdir():
         if entry.is_file() and entry.stat().st_mtime < cutoff:
             entry.unlink()
+
+
+def _is_retriable_anthropic_asset_error(exc: Exception) -> bool:
+    combined = str(exc).lower()
+    return "file" in combined and any(
+        phrase in combined
+        for phrase in ("not found", "does not exist", "no such file", "invalid file", "unknown file", "expired")
+    )
 
 
 def _upgrade_reply_headings(text: str) -> str:
