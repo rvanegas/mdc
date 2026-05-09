@@ -108,6 +108,9 @@ class _AnthropicAssetCache:
         )
         self._persist()
 
+    def all_entries(self) -> dict[str, "_AssetCacheEntry"]:
+        return dict(self._entries)
+
     def delete(self, asset: LocalAssetReference) -> None:
         key = str(asset.path)
         if key in self._entries:

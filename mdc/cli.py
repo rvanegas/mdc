@@ -257,6 +257,7 @@ def main(argv: list[str] | None = None) -> int:
                 library=args.library,
                 terms=args.terms,
                 strict=args.strict,
+                web_search=args.web_search,
             )
         if args.command == "diff":
             extra = args.diff_args or []
@@ -285,6 +286,18 @@ def main(argv: list[str] | None = None) -> int:
             if path is None:
                 return 1
             return run_argue(path, verbose=args.verbose, max_props=args.max_props, step=args.step)
+        if args.command == "edit":
+            if _require_bare(args.path):
+                return 1
+            path = _resolve_path_abbrev(args.path, Path.cwd())
+            if path is None:
+                return 1
+            return run_edit(path)
+        if args.command == "files":
+            if getattr(args, "files_command", None) == "ls":
+                return run_files_ls()
+            args._files_parser.print_help()
+            return 1
         if args.command == "pdf":
             if _require_bare(args.path):
                 return 1
@@ -413,7 +426,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print progress messages while fetching a reply.",
     )
     reply_parser.add_argument(
-        "-w", "--watch",
+        "-W", "--watch",
         action="store_true",
         default=False,
         help="Poll the transcript every second and reply whenever a pending turn is found.",
@@ -437,6 +450,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Abort if any library term lookup fails (default: warn and proceed).",
+    )
+    reply_parser.add_argument(
+        "-w", "--web-search",
+        action="store_true",
+        default=False,
+        help="Enable Anthropic web search (server-side tool).",
     )
     reply_parser.add_argument("path", help="Path to the markdown transcript.")
 
@@ -479,11 +498,30 @@ def build_parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
 
+    # edit
+    edit_parser = subparsers.add_parser(
+        "edit",
+        help="Open a file in $EDITOR.",
+    )
+    edit_parser.add_argument("path", help="Path to the markdown file.")
+
     # config
     subparsers.add_parser(
         "config",
         help="Show configuration and data file locations.",
     )
+
+    # files
+    files_parser = subparsers.add_parser(
+        "files",
+        help="Manage files uploaded to the Anthropic Files API.",
+    )
+    files_sub = files_parser.add_subparsers(dest="files_command")
+    files_sub.add_parser(
+        "ls",
+        help="List locally cached file uploads.",
+    )
+    files_parser.set_defaults(_files_parser=files_parser)
 
     # argue
     argue_parser = subparsers.add_parser(
@@ -520,6 +558,53 @@ def run_config() -> int:
     print(f"System prompt: {DEFAULT_SYSTEM_PROMPT_PATH}")
     print(f"State dir:     {_state_dir}")
     print(f"Cache dir:     {_cache_dir}")
+    return 0
+
+
+def run_edit(path: Path) -> int:
+    editor_cmd = os.environ.get("EDITOR")
+    if not editor_cmd:
+        print(str(path))
+        return 0
+    subprocess.run([editor_cmd, str(path)])
+    return 0
+
+
+def run_files_ls() -> int:
+    from mdc.anthropic_client import _AnthropicAssetCache
+
+    cache = _AnthropicAssetCache()
+    entries = cache.all_entries()
+    if not entries:
+        print("No cached file uploads.")
+        return 0
+
+    rows = []
+    for path_str, entry in sorted(entries.items()):
+        p = Path(path_str)
+        try:
+            stat = p.stat()
+            if stat.st_size != entry.size or stat.st_mtime_ns != entry.mtime_ns:
+                status = "stale"
+            else:
+                status = "fresh"
+        except FileNotFoundError:
+            status = "missing"
+
+        def _fmt_size(n: int) -> str:
+            if n < 1024:
+                return f"{n} B"
+            if n < 1024 * 1024:
+                return f"{n / 1024:.1f} KB"
+            return f"{n / 1024 / 1024:.1f} MB"
+
+        rows.append((entry.file_id, _fmt_size(entry.size), status, path_str))
+
+    id_w = max(len(r[0]) for r in rows)
+    sz_w = max(len(r[1]) for r in rows)
+    st_w = max(len(r[2]) for r in rows)
+    for file_id, size, status, path_str in rows:
+        print(f"{file_id:<{id_w}}  {size:>{sz_w}}  {status:<{st_w}}  {path_str}")
     return 0
 
 
@@ -1505,6 +1590,7 @@ def _run_reply_watch(
     model: str | None = None,
     reasoning_effort: str | None = None,
     verbose: bool = False,
+    web_search: bool = False,
 ) -> int:
     config = load_config()
     effective_model = model or config.model
@@ -1533,7 +1619,8 @@ def _run_reply_watch(
             if effective_model.startswith("claude-"):
                 reply_text = _reply_anthropic(transcript, config, path, effective_model,
                                               reasoning_effort=reasoning_effort,
-                                              verbose=verbose, status=noop)
+                                              verbose=verbose, status=noop,
+                                              web_search=web_search)
             elif effective_model.startswith("ollama/"):
                 reply_text = _reply_ollama(transcript, config, path, effective_model,
                                            verbose=verbose, status=noop)
@@ -1566,6 +1653,7 @@ def run_reply(
     library: bool = False,
     terms: list[str] | None = None,
     strict: bool = False,
+    web_search: bool = False,
 ) -> int:
     if _require_md(path):
         return 1
@@ -1576,7 +1664,7 @@ def run_reply(
         path = chat
 
     if watch:
-        return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort, verbose=verbose)
+        return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort, verbose=verbose, web_search=web_search)
 
     def status(msg: str) -> None:
         if verbose:
@@ -1612,6 +1700,7 @@ def run_reply(
                 library=library,
                 terms=terms or [],
                 strict=strict,
+                web_search=web_search,
             )
         except _LibraryTermNotFoundError as exc:
             missing = ", ".join(f'"{t}"' for t in exc.terms)
@@ -1655,6 +1744,7 @@ def _reply_anthropic(
     library: bool = False,
     terms: list[str] | None = None,
     strict: bool = False,
+    web_search: bool = False,
 ) -> str:
     from mdc.anthropic_client import AnthropicChatClient
     from mdc.library import LIBRARY_TOOLS, _get_summary, lookup_term, read_document, resolve_title
@@ -1755,6 +1845,10 @@ def _reply_anthropic(
         library_context = (library_context or "") + ("\n\n" if library_context else "") + edit_context
         for t in edit_targets:
             status(f"Edit target: {t.name}")
+
+    if web_search:
+        tools = (tools or []) + [{"type": "web_search_20260209", "name": "web_search"}]
+        status("Web search enabled.")
 
     lib_titles: dict[str, str] = {}
     if library and config.library_path:
