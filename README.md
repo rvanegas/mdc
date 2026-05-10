@@ -108,7 +108,8 @@ mdc reply -v -l -t "sorting algorithms" conversation.md
 | `-m`, `--model MODEL` | Model to use (e.g. `claude-sonnet-4-6`, `gpt-4o`, `ollama/llama3.2`). Overrides config. |
 | `-r`, `--reasoning-effort` | `none` / `low` / `medium` / `high` / `xhigh`. Default: `low`. |
 | `-v`, `--verbose` | Print progress messages and token usage / cost. |
-| `-w`, `--watch` | Poll the transcript once per second and reply whenever a pending turn appears. Useful when editing in another window. |
+| `-W`, `--watch` | Poll the transcript once per second and reply whenever a pending turn appears. Useful when editing in another window. |
+| `-w`, `--web-search` | Enable Anthropic server-side web search. |
 | `-l`, `--library` | Give the model access to the library index tools (`lookup_term`, `read_document`). Requires `library_path` in config. |
 | `-t`, `--term TERM` | Pre-look up a library index term and inject the results into context before the model runs. Requires `-l`. May be repeated. |
 | `--strict` | Abort if any `-t` term is not found in the index (default: warn and proceed). |
@@ -189,6 +190,44 @@ mdc diff essay.md -- -w          # pass -w (ignore whitespace) to diff
 | `-r N`, `--revision N` | Diff backup revision N against the current file. |
 | `-d N`, `--delta N` | Show the Nth most recent change. Default: 1 (most recent). |
 | `-- ...` | Any trailing arguments after `--` are passed directly to the system `diff` command. |
+
+---
+
+### `mdc edit`
+
+Open a file in `$EDITOR`. If `$EDITOR` is not set, prints the resolved path.
+
+```bash
+mdc edit conversation.md
+```
+
+| Argument | Description |
+|----------|-------------|
+| `path` | Path to the markdown file. Abbreviations are expanded as with other commands. |
+
+---
+
+### `mdc argue`
+
+Extract a structured logical argument from a plain document, or evaluate a companion argument file via the dianoia tool.
+
+```bash
+mdc argue essay.md              # extract argument → essay.argument.md
+mdc argue essay.md              # (run again) evaluate the companion
+mdc argue essay.argument.md     # evaluate directly
+mdc argue essay.md P3           # evaluate only step P3 and its justifiers
+```
+
+On first run (no companion `.argument.md` exists), mdc calls dianoia to extract the argument from the document and writes `<stem>.argument.md`. Edit that file, then run again to submit it for evaluation.
+
+On subsequent runs (companion exists), mdc submits the argument file to dianoia for formal and content evaluation and writes the results back into the companion.
+
+| Argument | Description |
+|----------|-------------|
+| `path` | Plain document or companion `.argument.md` file. |
+| `STEP` | Optional. Evaluate only this step and its direct justifiers. Requires a companion. |
+| `-v`, `--verbose` | Show extra detail. |
+| `-m N`, `--max-props N` | Maximum number of propositions passed to dianoia extract. |
 
 ---
 
@@ -278,6 +317,18 @@ mdc config
 
 ---
 
+### `mdc files`
+
+Manage files uploaded to the Anthropic Files API.
+
+```bash
+mdc files ls                     # list files on the server
+```
+
+`mdc files ls` queries the Anthropic server directly and prints each file's ID, upload date, size, and filename.
+
+---
+
 ## Editor Integration
 
 The `editors/` directory contains plugins for Emacs and Sublime Text. Both auto-activate on any file whose name matches the MDC convention (`yyyy-mm-dd-*.md`).
@@ -348,11 +399,11 @@ Files must satisfy these rules, enforced by `mdc validate` and auto-fixed where 
 
 ```bash
 mdc new -t "My Essay" --edit
-# creates: 2026-04-24-my-essay.md          ← the document
-#          2026-04-24-my-essay-editor.md   ← the transcript that drives reply
+# creates: 2026-04-24-my-essay.document.md  ← the document
+#          2026-04-24-my-essay.chat.md       ← the transcript that drives reply
 ```
 
-The editor transcript contains `[Edit: 2026-04-24-my-essay.md]` in its preamble. When `mdc reply` runs against the editor file, it loads the document into the system prompt and gives the model an `edit_file` tool.
+When `mdc reply` runs against a `.chat.md` file, it automatically discovers any sibling `.document.md` and `.argument.md` companions with the same stem, loads them into the system prompt, and gives the model an `edit_file` tool.
 
 ### How edits work
 
