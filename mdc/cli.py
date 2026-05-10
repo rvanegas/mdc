@@ -2015,8 +2015,8 @@ def _reply_openai(
 
 def _save_reply(path: Path, text: str, reply_text: str, assistant_name: str, heading: str, revisions_dir: Path | None = None) -> None:
     from mdc.edit_tools import _BACKUP_RE
-    body_with_related, new_refs = extract_references(reply_text)
-    body, new_related = extract_related(body_with_related)
+    body_with_refs, new_related = extract_related(reply_text)
+    body, new_refs = extract_references(body_with_refs)
     body = _upgrade_reply_headings(body)
     updated = append_assistant_reply(text, body, assistant_name=assistant_name, heading=heading)
     updated_t = parse_transcript(updated, assistant_name=assistant_name)
