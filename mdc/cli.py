@@ -2059,8 +2059,18 @@ def _is_retriable_anthropic_asset_error(exc: Exception) -> bool:
 
 
 def _upgrade_reply_headings(text: str) -> str:
-    """Promote any # or ## headings in the reply to ### to avoid colliding with turn delimiters."""
-    return re.sub(r"^#{1,2}(?!#)", "###", text, flags=re.MULTILINE)
+    """Promote any # or ## headings in the reply to ### to avoid colliding with turn delimiters.
+
+    ## References and ## Related are exempt — they are structural section headings that must
+    remain at ## to be recognized and merged by the transcript parser.
+    """
+    def promote(m: re.Match) -> str:
+        hashes, rest = m.group(1), m.group(2)
+        if rest.strip() in ("References", "Related"):
+            return m.group(0)
+        return "###" + rest
+
+    return re.sub(r"^(#{1,2})(?!#)(.*)", promote, text, flags=re.MULTILINE)
 
 
 def _print_reply_delta(chunk: str) -> None:
