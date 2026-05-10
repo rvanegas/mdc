@@ -571,40 +571,31 @@ def run_edit(path: Path) -> int:
 
 
 def run_files_ls() -> int:
-    from mdc.anthropic_client import _AnthropicAssetCache
+    import anthropic as _anthropic
+    from mdc.config import load_config
 
-    cache = _AnthropicAssetCache()
-    entries = cache.all_entries()
-    if not entries:
-        print("No cached file uploads.")
+    cfg = load_config()
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or cfg.anthropic_api_key
+    client = _anthropic.Anthropic(api_key=api_key)
+
+    files = list(client.beta.files.list(limit=1000))
+    if not files:
+        print("No files on server.")
         return 0
 
-    rows = []
-    for path_str, entry in sorted(entries.items()):
-        p = Path(path_str)
-        try:
-            stat = p.stat()
-            if stat.st_size != entry.size or stat.st_mtime_ns != entry.mtime_ns:
-                status = "stale"
-            else:
-                status = "fresh"
-        except FileNotFoundError:
-            status = "missing"
+    def _fmt_size(n: int) -> str:
+        if n < 1024:
+            return f"{n} B"
+        if n < 1024 * 1024:
+            return f"{n / 1024:.1f} KB"
+        return f"{n / 1024 / 1024:.1f} MB"
 
-        def _fmt_size(n: int) -> str:
-            if n < 1024:
-                return f"{n} B"
-            if n < 1024 * 1024:
-                return f"{n / 1024:.1f} KB"
-            return f"{n / 1024 / 1024:.1f} MB"
-
-        rows.append((entry.file_id, _fmt_size(entry.size), status, path_str))
-
+    rows = [(f.id, f.created_at.strftime("%Y-%m-%d %H:%M"), _fmt_size(f.size_bytes), f.filename) for f in files]
     id_w = max(len(r[0]) for r in rows)
-    sz_w = max(len(r[1]) for r in rows)
-    st_w = max(len(r[2]) for r in rows)
-    for file_id, size, status, path_str in rows:
-        print(f"{file_id:<{id_w}}  {size:>{sz_w}}  {status:<{st_w}}  {path_str}")
+    dt_w = max(len(r[1]) for r in rows)
+    sz_w = max(len(r[2]) for r in rows)
+    for file_id, created, size, filename in rows:
+        print(f"{file_id:<{id_w}}  {created}  {size:>{sz_w}}  {filename}")
     return 0
 
 
