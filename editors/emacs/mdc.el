@@ -79,6 +79,7 @@
     (define-key map (kbd "C-c C-n") #'mdc-new)
     (define-key map (kbd "M-n")     #'mdc-next-turn)
     (define-key map (kbd "M-p")     #'mdc-prev-turn)
+    (define-key map (kbd "C-c C-e") #'mdc-goto-input)
     map)
   "Keymap for `mdc-mode'.")
 
@@ -199,6 +200,92 @@ Opens the created file(s) for editing."
       (goto-char origin)
       (message "No previous turn"))))
 
+(defun mdc--ai-speaker-p (speaker)
+  "Return non-nil if SPEAKER is a known AI assistant name."
+  (member (downcase speaker) '("claude" "gpt" "ollama")))
+
+(defun mdc--turn-speaker-p (speaker)
+  "Return non-nil if SPEAKER is a conversational turn (not a structural section)."
+  (not (member (downcase speaker) '("references" "related"))))
+
+(defun mdc--last-turn ()
+  "Return (SPEAKER . HEADER-POS) for the last conversational turn, or nil.
+Skips structural sections (References, Related)."
+  (save-excursion
+    (goto-char (point-max))
+    (let (result)
+      (while (and (not result)
+                  (re-search-backward "^## \\(.+\\)$" nil t))
+        (let ((spk (match-string-no-properties 1)))
+          (when (mdc--turn-speaker-p spk)
+            (setq result (cons spk (match-beginning 0))))))
+      result)))
+
+(defun mdc--structural-sections-start ()
+  "Return the buffer position just before any trailing structural sections.
+Structural sections (References, Related) must be at the end of the file.
+Returns `point-max' if none are present."
+  (save-excursion
+    (goto-char (point-max))
+    (let ((pos (point-max)))
+      (while (re-search-backward "^## \\(.+\\)$" nil t)
+        (if (not (mdc--turn-speaker-p (match-string-no-properties 1)))
+            (setq pos (match-beginning 0))
+          (goto-char (point-min))))  ; stop scanning
+      pos)))
+
+(defun mdc--prev-user-speaker ()
+  "Return the speaker name from the most recent user (non-AI, non-structural) turn, or nil."
+  (save-excursion
+    (goto-char (point-max))
+    (let (result)
+      (while (and (not result)
+                  (re-search-backward "^## \\(.+\\)$" nil t))
+        (let ((spk (match-string-no-properties 1)))
+          (when (and (mdc--turn-speaker-p spk)
+                     (not (mdc--ai-speaker-p spk)))
+            (setq result spk))))
+      result)))
+
+;;;###autoload
+(defun mdc-goto-input ()
+  "Navigate to the next input position in the transcript.
+
+If the last turn is a user turn, move point to the end of its body.
+If the last turn is an AI turn, append a new user-turn section using
+the speaker name from the previous user turn, then place point on the
+blank line that follows the new section header."
+  (interactive)
+  (let* ((last    (mdc--last-turn))
+         (speaker (car last))
+         (hdr-pos (cdr last)))
+    (unless last
+      (user-error "No turns found in buffer"))
+    (if (not (mdc--ai-speaker-p speaker))
+        ;; User turn — jump to the end of its body.
+        (let ((body-end
+               (save-excursion
+                 (goto-char hdr-pos)
+                 (forward-line 1)
+                 (if (re-search-forward "^## " nil t)
+                     (progn (beginning-of-line)
+                            (skip-chars-backward " \t\n")
+                            (point))
+                   (goto-char (point-max))
+                   (skip-chars-backward " \t\n")
+                   (point)))))
+          (goto-char body-end)
+          (end-of-line))
+      ;; AI turn — append a fresh user section and land on its body line.
+      (let ((user-spk (or (mdc--prev-user-speaker)
+                          (user-error "No previous user turn found"))))
+        (let ((insert-pos (mdc--structural-sections-start)))
+          (goto-char insert-pos)
+          (skip-chars-backward "\n")
+          (insert "\n\n## " user-spk "\n\n")
+          (when (eobp)
+            (forward-line -1)))))))
+
 ;; ── Auto-detection ───────────────────────────────────────────────────────────
 
 (defun mdc--dated-slug-p (filename)
@@ -229,7 +316,9 @@ Key bindings:
   :lighter " MDC"
   :keymap mdc-mode-map
   (if mdc-mode
-      (font-lock-add-keywords nil mdc--font-lock-keywords 'append)
+      (progn
+        (font-lock-add-keywords nil mdc--font-lock-keywords 'append)
+        (auto-revert-mode 1))
     (font-lock-remove-keywords nil mdc--font-lock-keywords))
   (font-lock-flush))
 
