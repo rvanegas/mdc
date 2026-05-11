@@ -5,8 +5,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
-LONG_THRESHOLD = 800
-LONG_SECTION = 500
 DEFAULT_WINDOW = 50
 
 _REVIEW_PROMPTS_DIR = Path("~/.config/mdc/review").expanduser()
@@ -30,9 +28,9 @@ READING PROTOCOL:
   **Doc N — "Document Title" (YYYY-MM-DD)**
   where N is the document number, the title is the document's own title, and the date is the \
 document date.
-- Respond in 500 words maximum — sharp, assessorial, not exhaustive.
-- Long documents may arrive split into labeled sections within a single turn; read all sections \
-first, then compose one response covering the whole document.
+- Respond in proportion to the document's length: roughly 300 words for short pieces \
+(under 100 lines), 500 for medium (100–300 lines), 800 for long ones (over 300 lines). \
+Stay sharp and assessorial — never exhaust the argument.
 
 SCHEDULED ASSESSMENTS (full analytical depth permitted):
 - Interim assessments — sent automatically every N documents. These are \
@@ -69,7 +67,7 @@ Write with the confidence of someone who has read carefully and formed genuine v
 assessment will anchor the final one.
 
 After the assessment, return to per-doc protocol:
-- one doc, 500 words max, wait for the next document
+- one doc, proportional length (300/500/800 words for short/medium/long), wait for the next document
 - portrait-of-author task — not exhaustive argument analysis
 """
 
@@ -101,7 +99,7 @@ Write with the confidence of someone who has read carefully and formed genuine v
 attempt the whole-arc synthesis here — that is the job of the final assessment.
 
 After the assessment, return to per-doc protocol:
-- one doc, 500 words max, wait for the next document
+- one doc, proportional length (300/500/800 words for short/medium/long), wait for the next document
 - portrait-of-author task — not exhaustive argument analysis
 """
 
@@ -216,19 +214,7 @@ def estimate_review_cost(
 def build_doc_content(doc_path: Path, doc_num: int) -> list[dict]:
     """Return the user_content blocks for a single document turn."""
     lines = doc_path.read_text(encoding="utf-8").splitlines()
-    if len(lines) > LONG_THRESHOLD:
-        sections = [lines[i:i + LONG_SECTION] for i in range(0, len(lines), LONG_SECTION)]
-        section_text = "\n\n".join(
-            f"[Section {i + 1} of {len(sections)}]\n" + "\n".join(s)
-            for i, s in enumerate(sections)
-        )
-        text = (
-            f"Document {doc_num}: {doc_path.name} "
-            f"(LONG — {len(lines)} lines, {len(sections)} sections — "
-            f"read all sections, then respond once)\n\n{section_text}"
-        )
-    else:
-        text = f"Document {doc_num}: {doc_path.name}\n\n" + "\n".join(lines)
+    text = f"Document {doc_num}: {doc_path.name} ({len(lines)} lines)\n\n" + "\n".join(lines)
     return [{"type": "text", "text": text}]
 
 
