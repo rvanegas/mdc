@@ -206,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_review(
                 library_path=args.library_path,
                 reset=args.reset,
+                dry_run=args.dry_run,
+                since=args.since,
             )
         if args.command == "index":
             return run_index(
@@ -350,6 +352,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Discard saved state and start the review from scratch.",
+    )
+    review_parser.add_argument(
+        "--since",
+        default=None,
+        metavar="DOC",
+        help="Re-review from this document onward, overriding saved state from that point.",
+    )
+    review_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Show what would be reviewed without making API calls.",
     )
 
     # relate
@@ -1602,7 +1616,51 @@ def run_pdf(path: Path, quiet: bool = False) -> int:
 _REVIEW_WINDOW = 40
 
 
-def run_review(library_path: str | None, reset: bool) -> int:
+_TOC_BLOCK = """\
+```{=latex}
+\\tableofcontents
+\\newpage
+```
+
+"""
+
+
+def _prepend_toc(out_path: Path) -> None:
+    content = out_path.read_text(encoding="utf-8")
+    if not content.startswith(_TOC_BLOCK):
+        out_path.write_text(_TOC_BLOCK + content, encoding="utf-8")
+
+
+def _truncate_file_since(path: Path, keep_interims: int, names_to_remove: set) -> None:
+    if not path.exists():
+        return
+    import re
+    content = path.read_text(encoding="utf-8")
+    for m in re.finditer(r"\n# (.+)\n", content):
+        header = m.group(1)
+        if header.startswith("Doc "):
+            fn = header.split(": ", 1)[1] if ": " in header else ""
+            if fn in names_to_remove:
+                path.write_text(content[:m.start()], encoding="utf-8")
+                return
+        elif header.startswith("Interim "):
+            n = int(header.split()[1])
+            if n > keep_interims:
+                path.write_text(content[:m.start()], encoding="utf-8")
+                return
+        elif header.startswith("Final"):
+            path.write_text(content[:m.start()], encoding="utf-8")
+            return
+
+
+def _truncate_review_since(out_path: Path, assessments_path: Path, all_docs: list, start_pos: int, window: int) -> None:
+    names_to_remove = {d.name for d in all_docs[start_pos:]}
+    keep_interims = start_pos // window
+    _truncate_file_since(out_path, keep_interims, names_to_remove)
+    _truncate_file_since(assessments_path, keep_interims, names_to_remove)
+
+
+def run_review(library_path: str | None, reset: bool, dry_run: bool = False, since: str | None = None) -> int:
     import hashlib
     from mdc.config import _state_dir
     from mdc.anthropic_client import AnthropicChatClient
@@ -1620,6 +1678,7 @@ def run_review(library_path: str | None, reset: bool) -> int:
         load_review_state,
         save_review_state,
     )
+    from mdc.library import REVIEW_FILENAME, REVIEW_ASSESSMENTS_FILENAME
 
     config = load_config()
     effective_model = config.model
@@ -1641,11 +1700,13 @@ def run_review(library_path: str | None, reset: bool) -> int:
 
     path_hash = hashlib.sha256(str(lib_path).encode()).hexdigest()[:8]
     state_path = _state_dir / f"review-{path_hash}.json"
-    out_path = lib_path / "REVIEW.md"
+    out_path = lib_path / REVIEW_FILENAME
+    assessments_path = lib_path / REVIEW_ASSESSMENTS_FILENAME
 
     if reset:
         state_path.unlink(missing_ok=True)
         out_path.unlink(missing_ok=True)
+        assessments_path.unlink(missing_ok=True)
         print("State and output file reset.")
 
     system_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "system.md", _DEFAULT_SYSTEM_PROMPT)
@@ -1661,9 +1722,34 @@ def run_review(library_path: str | None, reset: bool) -> int:
     state = load_review_state(state_path)
     total = len(all_docs)
 
+    if since:
+        since_name = Path(since).name
+        start_pos = next((i for i, d in enumerate(all_docs) if d.name == since_name), None)
+        if start_pos is None:
+            print(f"Error: '{since_name}' not found in indexed documents.")
+            return 1
+        doc_num_by_name = {d.name: i + 1 for i, d in enumerate(all_docs)}
+        reviewed_names = {d.name for d in all_docs[:start_pos]}
+        state.responses = [
+            {**r, "doc_num": doc_num_by_name[r["filename"]]}
+            for r in state.responses
+            if r["filename"] in reviewed_names
+        ]
+        state.interims = state.interims[:start_pos // _REVIEW_WINDOW]
+        state.doc_index = start_pos
+        state.final_interim_done = False
+        state.final_done = False
+        if not dry_run:
+            _truncate_review_since(out_path, assessments_path, all_docs, start_pos, _REVIEW_WINDOW)
+            save_review_state(state, state_path)
+        print(f"State rewound to doc {start_pos + 1}: {since_name}")
+
     if state.final_done:
-        print("Review already complete. Use --reset to start over.")
-        return 0
+        if state.doc_index >= total:
+            print("Review already complete. Use --reset to start over.")
+            return 0
+        state.final_done = False
+        state.final_interim_done = False
 
     remaining_docs = all_docs[state.doc_index:]
     rates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
@@ -1677,6 +1763,17 @@ def run_review(library_path: str | None, reset: bool) -> int:
         print(f"Estimated cost: {_format_total(estimated)}")
     else:
         print("Estimated cost: unknown (model not in pricing table)")
+
+    if dry_run:
+        num_interims = len(remaining_docs) // _REVIEW_WINDOW
+        if not state.final_interim_done:
+            num_interims += 1
+        num_calls = len(remaining_docs) + num_interims + (0 if state.final_done else 1)
+        print(f"Remaining docs: {len(remaining_docs)}  •  API calls: {num_calls}")
+        for doc in remaining_docs:
+            print(f"  {doc.name}")
+        return 0
+
     try:
         answer = input("Proceed? [y/N] ").strip().lower()
     except EOFError:
@@ -1713,9 +1810,13 @@ def run_review(library_path: str | None, reset: bool) -> int:
             reasoning_effort="medium",
         )
 
-    def _append_output(header: str, text: str) -> None:
+    def _append_output(header: str, text: str, assessment: bool = False) -> None:
+        entry = f"\n# {header}\n\n{text}\n\n---\n"
         with out_path.open("a", encoding="utf-8") as fh:
-            fh.write(f"\n# {header}\n\n{text}\n\n---\n")
+            fh.write(entry)
+        if assessment:
+            with assessments_path.open("a", encoding="utf-8") as fh:
+                fh.write(entry)
 
     def _record_cost(reply) -> None:
         cost = _calc_cost(reply)
@@ -1726,7 +1827,7 @@ def run_review(library_path: str | None, reset: bool) -> int:
         doc_num = state.doc_index + 1
         doc_path = all_docs[state.doc_index]
         user_content = build_doc_content(doc_path, doc_num)
-        messages = build_review_messages(state.interims, state.responses[-_REVIEW_WINDOW:], user_content)
+        messages = build_review_messages(state.interims[-1:], state.responses[-_REVIEW_WINDOW:], user_content)
 
         print(f"\nDoc {doc_num}/{total}: {doc_path.name}")
         reply = _call_doc(messages)
@@ -1751,7 +1852,7 @@ def run_review(library_path: str | None, reset: bool) -> int:
             reply = _call_synthesis(messages)
             print()
             _record_cost(reply)
-            _append_output(f"Interim {n} (after doc {state.doc_index})", reply.text)
+            _append_output(f"Interim {n} (after doc {state.doc_index})", reply.text, assessment=True)
             state.interims.append(reply.text)
             save_review_state(state, state_path)
 
@@ -1762,7 +1863,7 @@ def run_review(library_path: str | None, reset: bool) -> int:
         reply = _call_synthesis(messages)
         print()
         _record_cost(reply)
-        _append_output(f"Final Interim (after doc {total})", reply.text)
+        _append_output(f"Final Interim (after doc {total})", reply.text, assessment=True)
         state.interims.append(reply.text)
         state.final_interim_done = True
         save_review_state(state, state_path)
@@ -1774,9 +1875,11 @@ def run_review(library_path: str | None, reset: bool) -> int:
         reply = _call_synthesis(messages)
         print()
         _record_cost(reply)
-        _append_output("Final Assessment", reply.text)
+        _append_output("Final Assessment", reply.text, assessment=True)
         state.final_done = True
         save_review_state(state, state_path)
+        _prepend_toc(out_path)
+        _prepend_toc(assessments_path)
 
     print(f"\nReview complete. Total cost: {_format_total(state.cumulative_cost)}.")
     print(f"Output: {out_path}")

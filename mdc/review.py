@@ -169,7 +169,7 @@ def list_review_docs(library_path: Path) -> list[Path]:
     """Return indexed documents in chronological order (by rel_path date prefix)."""
     from mdc.library import load_entries
     entries = load_entries(library_path)
-    return [library_path / e.rel_path for e in sorted(entries, key=lambda e: e.rel_path)]
+    return [library_path / e.rel_path for e in sorted(entries, key=lambda e: Path(e.rel_path).name)]
 
 
 def estimate_review_cost(
