@@ -199,8 +199,12 @@ def parse_keys_md(library_path: Path) -> tuple[dict[str, str], set[str], set[str
             current = ""
             continue
         if section == "plural":
-            canonicals.add(stripped)
-            alias_map[stripped + "s"] = stripped
+            if stripped.endswith("s"):
+                canonicals.add(stripped)
+                alias_map[stripped[:-1]] = stripped
+            else:
+                canonicals.add(stripped)
+                alias_map[stripped + "s"] = stripped
         elif section == "alias":
             if stripped.startswith("- "):
                 alias = stripped[2:].strip()
