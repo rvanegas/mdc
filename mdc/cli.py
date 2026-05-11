@@ -202,6 +202,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.command == "review":
+            return run_review(
+                library_path=args.library_path,
+                reset=args.reset,
+            )
         if args.command == "index":
             return run_index(
                 library_path=args.library_path,
@@ -328,6 +333,24 @@ def build_parser() -> argparse.ArgumentParser:
         description="Work with mdc-format markdown conversation files.",
     )
     subparsers = parser.add_subparsers(dest="command")
+
+    # review
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Run a staged AI review over an indexed document collection.",
+    )
+    review_parser.add_argument(
+        "library_path",
+        nargs="?",
+        default=None,
+        help="Path to library directory (overrides config file).",
+    )
+    review_parser.add_argument(
+        "--reset",
+        action="store_true",
+        default=False,
+        help="Discard saved state and start the review from scratch.",
+    )
 
     # relate
     # index
@@ -1573,6 +1596,190 @@ def run_pdf(path: Path, quiet: bool = False) -> int:
             subprocess.run(["open", str(output)])
         elif shutil.which("start"):
             subprocess.run(["start", str(output)], shell=True)
+    return 0
+
+
+_REVIEW_WINDOW = 40
+
+
+def run_review(library_path: str | None, reset: bool) -> int:
+    import hashlib
+    from mdc.config import _state_dir
+    from mdc.anthropic_client import AnthropicChatClient
+    from mdc.review import (
+        _DEFAULT_FINAL_INTERIM_PROMPT,
+        _DEFAULT_FINAL_PROMPT,
+        _DEFAULT_INTERIM_PROMPT,
+        _DEFAULT_SYSTEM_PROMPT,
+        _REVIEW_PROMPTS_DIR,
+        build_doc_content,
+        build_review_messages,
+        estimate_review_cost,
+        list_review_docs,
+        load_prompt,
+        load_review_state,
+        save_review_state,
+    )
+
+    config = load_config()
+    effective_model = config.model
+    if not effective_model:
+        print("Error: no model specified. Set 'model' in config.")
+        return 1
+    if not effective_model.startswith("claude-"):
+        print("Error: mdc review only supports Anthropic (claude-*) models.")
+        return 1
+
+    raw_path = library_path or (str(config.library_path) if config.library_path else None)
+    if not raw_path:
+        print("Error: no library path. Pass a path or set 'library_path' in config.")
+        return 1
+    lib_path = Path(raw_path).expanduser().resolve()
+    if not lib_path.is_dir():
+        print(f"Error: '{lib_path}' is not a directory.")
+        return 1
+
+    path_hash = hashlib.sha256(str(lib_path).encode()).hexdigest()[:8]
+    state_path = _state_dir / f"review-{path_hash}.json"
+    out_path = lib_path / "REVIEW.md"
+
+    if reset:
+        state_path.unlink(missing_ok=True)
+        out_path.unlink(missing_ok=True)
+        print("State and output file reset.")
+
+    system_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "system.md", _DEFAULT_SYSTEM_PROMPT)
+    interim_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "interim.md", _DEFAULT_INTERIM_PROMPT)
+    final_interim_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "final-interim.md", _DEFAULT_FINAL_INTERIM_PROMPT)
+    final_prompt_text = load_prompt(_REVIEW_PROMPTS_DIR / "final.md", _DEFAULT_FINAL_PROMPT)
+
+    all_docs = list_review_docs(lib_path)
+    if not all_docs:
+        print("No indexed documents found. Run 'mdc index' first.")
+        return 1
+
+    state = load_review_state(state_path)
+    total = len(all_docs)
+
+    if state.final_done:
+        print("Review already complete. Use --reset to start over.")
+        return 0
+
+    remaining_docs = all_docs[state.doc_index:]
+    rates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
+    estimated = estimate_review_cost(lib_path, remaining_docs, _REVIEW_WINDOW, system_prompt, rates)
+
+    if state.doc_index == 0:
+        print(f"{total} documents  •  model: {effective_model}")
+    else:
+        print(f"Resuming from doc {state.doc_index + 1} of {total}  •  model: {effective_model}")
+    if estimated is not None:
+        print(f"Estimated cost: {_format_total(estimated)}")
+    else:
+        print("Estimated cost: unknown (model not in pricing table)")
+    try:
+        answer = input("Proceed? [y/N] ").strip().lower()
+    except EOFError:
+        answer = ""
+    if answer != "y":
+        print("Aborted.")
+        return 0
+
+    client = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
+    system_content = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+
+    def _calc_cost(reply) -> float:
+        if not rates:
+            return 0.0
+        in_rate, out_rate = rates
+        return (
+            reply.input_tokens * in_rate / 1_000_000
+            + reply.output_tokens * out_rate / 1_000_000
+            + reply.cache_creation_tokens * in_rate * 1.25 / 1_000_000
+            + reply.cache_read_tokens * in_rate * 0.10 / 1_000_000
+        )
+
+    def _call_doc(messages: list[dict]) -> object:
+        return client.generate_reply(
+            system_content, messages,
+            on_delta=_print_reply_delta,
+            reasoning_effort="none",
+        )
+
+    def _call_synthesis(messages: list[dict]) -> object:
+        return client.generate_reply(
+            system_content, messages,
+            on_delta=_print_reply_delta,
+            reasoning_effort="medium",
+        )
+
+    def _append_output(header: str, text: str) -> None:
+        with out_path.open("a", encoding="utf-8") as fh:
+            fh.write(f"\n# {header}\n\n{text}\n\n---\n")
+
+    def _record_cost(reply) -> None:
+        cost = _calc_cost(reply)
+        state.cumulative_cost += cost
+        print(f"  {_format_cost(cost)}  (total {_format_total(state.cumulative_cost)})")
+
+    while state.doc_index < total:
+        doc_num = state.doc_index + 1
+        doc_path = all_docs[state.doc_index]
+        user_content = build_doc_content(doc_path, doc_num)
+        messages = build_review_messages(state.interims, state.responses[-_REVIEW_WINDOW:], user_content)
+
+        print(f"\nDoc {doc_num}/{total}: {doc_path.name}")
+        reply = _call_doc(messages)
+        print()
+        _record_cost(reply)
+
+        _append_output(f"Doc {doc_num}: {doc_path.name}", reply.text)
+        state.responses.append({"doc_num": doc_num, "filename": doc_path.name, "text": reply.text})
+        if len(state.responses) > _REVIEW_WINDOW:
+            state.responses.pop(0)
+        state.doc_index += 1
+        save_review_state(state, state_path)
+
+        is_last = state.doc_index == total
+        is_interim_point = state.doc_index % _REVIEW_WINDOW == 0
+
+        if is_interim_point and not is_last:
+            n = state.doc_index // _REVIEW_WINDOW
+            print(f"\n>>> Interim assessment {n} (after doc {state.doc_index}) <<<\n")
+            interim_user = [{"type": "text", "text": interim_prompt}]
+            messages = build_review_messages(state.interims, state.responses[-_REVIEW_WINDOW:], interim_user)
+            reply = _call_synthesis(messages)
+            print()
+            _record_cost(reply)
+            _append_output(f"Interim {n} (after doc {state.doc_index})", reply.text)
+            state.interims.append(reply.text)
+            save_review_state(state, state_path)
+
+    if not state.final_interim_done:
+        print(f"\n>>> Final interim assessment <<<\n")
+        final_interim_user = [{"type": "text", "text": final_interim_prompt}]
+        messages = build_review_messages(state.interims, state.responses[-_REVIEW_WINDOW:], final_interim_user)
+        reply = _call_synthesis(messages)
+        print()
+        _record_cost(reply)
+        _append_output(f"Final Interim (after doc {total})", reply.text)
+        state.interims.append(reply.text)
+        state.final_interim_done = True
+        save_review_state(state, state_path)
+
+    if not state.final_done:
+        print(f"\n>>> Final assessment <<<\n")
+        final_user = [{"type": "text", "text": final_prompt_text}]
+        messages = build_review_messages(state.interims, state.responses[-_REVIEW_WINDOW:], final_user)
+        reply = _call_synthesis(messages)
+        print()
+        _record_cost(reply)
+        _append_output("Final Assessment", reply.text)
+        state.final_done = True
+        save_review_state(state, state_path)
+
+    print(f"\nReview complete. Total cost: {_format_total(state.cumulative_cost)}.")
+    print(f"Output: {out_path}")
     return 0
 
 
