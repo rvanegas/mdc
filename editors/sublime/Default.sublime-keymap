@@ -4,6 +4,7 @@
     { "keys": ["ctrl+c", "ctrl+k"], "command": "mdc_check",    "context": [{"key": "selector", "operator": "equal", "operand": "text.mdc"}] },
     { "keys": ["ctrl+c", "ctrl+v"], "command": "mdc_validate", "context": [{"key": "selector", "operator": "equal", "operand": "text.mdc"}] },
     { "keys": ["ctrl+c", "ctrl+n"], "command": "mdc_new" },
-    { "keys": ["alt+down"],         "command": "mdc_next_turn", "context": [{"key": "selector", "operator": "equal", "operand": "text.mdc"}] },
-    { "keys": ["alt+up"],           "command": "mdc_prev_turn", "context": [{"key": "selector", "operator": "equal", "operand": "text.mdc"}] }
+    { "keys": ["alt+down"],         "command": "mdc_next_turn",   "context": [{"key": "selector", "operator": "equal", "operand": "text.mdc"}] },
+    { "keys": ["alt+up"],           "command": "mdc_prev_turn",   "context": [{"key": "selector", "operator": "equal", "operand": "text.mdc"}] },
+    { "keys": ["ctrl+c", "ctrl+e"], "command": "mdc_goto_input",  "context": [{"key": "selector", "operator": "equal", "operand": "text.mdc"}] }
 ]

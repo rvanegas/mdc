@@ -11,6 +11,8 @@ import sublime_plugin
 
 _MDC_FILENAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-.+\.md$")
 _SECTION_RE = re.compile(r"^## .+", re.MULTILINE)
+_AI_SPEAKERS = frozenset({"claude", "gpt", "ollama"})
+_STRUCTURAL_SECTIONS = frozenset({"references", "related"})
 _MDC_SYNTAX = "Packages/mdc/mdc.sublime-syntax"
 _SETTINGS_FILE = "mdc.sublime-settings"
 
@@ -204,6 +206,83 @@ class MdcPrevTurnCommand(sublime_plugin.TextCommand):
             self.view.show(target)
         else:
             sublime.status_message("No previous turn")
+
+
+class MdcGotoInputCommand(sublime_plugin.TextCommand):
+    """Navigate to the next input position in the transcript.
+
+    If the last conversational turn is a user turn, move the cursor to the end
+    of its body.  If it is an AI turn, append a fresh user-turn section (using
+    the speaker name found in the most recent previous user turn) and place the
+    cursor on the blank line that follows the new header.
+    """
+
+    def run(self, edit: sublime.Edit) -> None:
+        view = self.view
+        all_regions = view.find_all(r"^## .+")
+        # Find the last conversational turn (skip structural sections).
+        last_turn = None
+        for r in reversed(all_regions):
+            header_text = view.substr(r)
+            speaker = header_text[3:].strip()
+            if speaker.lower() not in _STRUCTURAL_SECTIONS:
+                last_turn = (speaker, r)
+                break
+        if last_turn is None:
+            sublime.status_message("No turns found")
+            return
+
+        speaker, hdr_region = last_turn
+
+        if speaker.lower() not in _AI_SPEAKERS:
+            # User turn — jump to end of its body.
+            hdr_end = hdr_region.end()
+            # Body ends just before the next ## header or at EOF.
+            next_hdr = view.find(r"^## ", hdr_end)
+            if next_hdr and next_hdr.begin() > hdr_end:
+                body_end = next_hdr.begin()
+            else:
+                body_end = view.size()
+            # Strip trailing whitespace/newlines.
+            content = view.substr(sublime.Region(hdr_end, body_end))
+            stripped_len = len(content.rstrip())
+            target = hdr_end + stripped_len
+            view.sel().clear()
+            view.sel().add(target)
+            view.show(target)
+        else:
+            # AI turn — find the previous user speaker name.
+            user_speaker = None
+            for r in reversed(all_regions):
+                header_text = view.substr(r)
+                spk = header_text[3:].strip()
+                if spk.lower() not in _STRUCTURAL_SECTIONS and spk.lower() not in _AI_SPEAKERS:
+                    user_speaker = spk
+                    break
+            if user_speaker is None:
+                sublime.status_message("No previous user turn found")
+                return
+
+            # Find where to insert: just before any trailing structural sections.
+            insert_pos = view.size()
+            for r in reversed(all_regions):
+                header_text = view.substr(r)
+                spk = header_text[3:].strip()
+                if spk.lower() in _STRUCTURAL_SECTIONS:
+                    insert_pos = r.begin()
+                else:
+                    break
+
+            # Strip trailing newlines before insertion point.
+            prefix = view.substr(sublime.Region(0, insert_pos)).rstrip("\n")
+            new_section = f"\n\n## {user_speaker}\n\n"
+            # Replace everything up to insert_pos with stripped version + new section.
+            view.replace(edit, sublime.Region(len(prefix), insert_pos), new_section)
+            # Place cursor on the blank body line (after the header line).
+            target = len(prefix) + len(new_section) - 1
+            view.sel().clear()
+            view.sel().add(target)
+            view.show(target)
 
 
 # ── Auto-detection ────────────────────────────────────────────────────────────

@@ -3,5 +3,6 @@
     { "caption": "MDC: Fix",      "command": "mdc_fix"      },
     { "caption": "MDC: Check",    "command": "mdc_check"    },
     { "caption": "MDC: Validate", "command": "mdc_validate" },
-    { "caption": "MDC: New",      "command": "mdc_new"      }
+    { "caption": "MDC: New",        "command": "mdc_new"        },
+    { "caption": "MDC: Goto Input", "command": "mdc_goto_input" }
 ]

@@ -11,6 +11,7 @@
                     { "caption": "Fix",      "command": "mdc_fix"      },
                     { "caption": "Check",    "command": "mdc_check"    },
                     { "caption": "Validate", "command": "mdc_validate" },
+                    { "caption": "Goto Input",  "command": "mdc_goto_input" },
                     { "caption": "-" },
                     { "caption": "New Transcript…", "command": "mdc_new" }
                 ]
