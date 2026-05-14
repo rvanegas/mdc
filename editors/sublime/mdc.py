@@ -273,13 +273,14 @@ class MdcGotoInputCommand(sublime_plugin.TextCommand):
                 else:
                     break
 
-            # Strip trailing newlines before insertion point.
-            prefix = view.substr(sublime.Region(0, insert_pos)).rstrip("\n")
-            new_section = f"\n\n## {user_speaker}\n\n"
-            # Replace everything up to insert_pos with stripped version + new section.
-            view.replace(edit, sublime.Region(len(prefix), insert_pos), new_section)
-            # Place cursor on the blank body line (after the header line).
-            target = len(prefix) + len(new_section) - 1
+            # Strip trailing newlines before insertion point (stay in view positions).
+            strip_start = insert_pos
+            while strip_start > 0 and view.substr(strip_start - 1) == "\n":
+                strip_start -= 1
+            new_section = f"\n\n## {user_speaker}\n\n\n\n"
+            view.replace(edit, sublime.Region(strip_start, insert_pos), new_section)
+            # Place cursor on the middle blank line (blank above and below).
+            target = strip_start + len(new_section) - 2
             view.sel().clear()
             view.sel().add(target)
             view.show(target)
@@ -290,10 +291,16 @@ class MdcGotoInputCommand(sublime_plugin.TextCommand):
 class MdcEventListener(sublime_plugin.EventListener):
     """Auto-assign MDC syntax when a .md file has an MDC preamble."""
 
-    def on_load(self, view: sublime.View) -> None:
+    def _maybe_assign_syntax(self, view: sublime.View) -> None:
         if not _settings().get("auto_detect_syntax", True):
             return
         if view.syntax() and "mdc" in (view.syntax().path or "").lower():
             return
         if _is_mdc(view):
             view.assign_syntax(_MDC_SYNTAX)
+
+    def on_load(self, view: sublime.View) -> None:
+        self._maybe_assign_syntax(view)
+
+    def on_activated(self, view: sublime.View) -> None:
+        self._maybe_assign_syntax(view)
