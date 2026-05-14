@@ -8,8 +8,12 @@ from pathlib import Path
 
 from mdc.transcript import TranscriptError
 
-_LOGIC_MD_PATH = Path(__file__).parent / "LOGIC.md"
-_LOGIC_GRAMMAR = _LOGIC_MD_PATH.read_text(encoding="utf-8") if _LOGIC_MD_PATH.is_file() else ""
+_PKG = Path(__file__).parent
+_LOGIC_GRAMMAR = "\n\n".join(
+    p.read_text(encoding="utf-8")
+    for name in ("LOGIC-ASCII.md", "LOGIC-JSON.md")
+    if (p := _PKG / name).is_file()
+)
 
 EDIT_TOOL: dict[str, object] = {
     "name": "edit_file",

@@ -7,7 +7,7 @@ import re
 
 _ASSUMPTION_RE = re.compile(r"^- (\d+)\s*:\s+(.+)$")
 _ARGUMENT_RE = re.compile(r"^- (\d+)(?:\s+\(from:\s*([\d,\s]+)\))?\s*:\s+(.+)$")
-_DEFINITION_RE = re.compile(r"^- ([A-Za-z]+)\s*=\s*(.+)$")
+_DEFINITION_RE = re.compile(r"^- ([A-Za-z][A-Za-z0-9]*(?:/\d+)?)\s*=\s*(.+)$")
 _PROP_SYMBOL_RE = re.compile(r"^- (\d+)[\s:(]")
 
 
@@ -245,9 +245,14 @@ def markdown_to_argument(text: str) -> dict:
         if current_section == "definitions" and line.startswith("- "):
             m = _DEFINITION_RE.match(line)
             if m:
-                sym, value = m.group(1), m.group(2).strip()
+                raw_sym, value = m.group(1), m.group(2).strip()
+                if "/" in raw_sym:
+                    sym, arity_str = raw_sym.split("/", 1)
+                    arity = int(arity_str)
+                else:
+                    sym, arity = raw_sym, 0
                 if sym[0].isupper():
-                    definitions["predicates"].append({"symbol": sym, "value": value})
+                    definitions["predicates"].append({"symbol": sym, "value": value, "arity": arity})
                 else:
                     definitions["constants"].append({"symbol": sym, "value": value})
 
