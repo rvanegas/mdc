@@ -748,6 +748,17 @@ def _get_summary(library_path: Path, rel_path: str, exclude: str | None = None) 
         lines.append("  " + "; ".join(entry.terms))
     if entry.summary:
         lines.append("  " + entry.summary)
+    if entry.related:
+        related_lines = []
+        for title in entry.related:
+            rp = resolve_title(library_path, title)
+            if rp and rp != exclude:
+                related_lines.append(f"    {rp} — {title}")
+            elif rp is None:
+                related_lines.append(f"    {title}")
+        if related_lines:
+            lines.append("  Related documents (call read_document on any of these to follow the reference chain):")
+            lines.extend(related_lines)
     return "\n".join(lines)
 
 

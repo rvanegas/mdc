@@ -147,6 +147,43 @@ def _resolve_path_abbrev(s: str, cwd: Path, *, secondary_priority: tuple[str, ..
     return None
 
 
+_COMPANION_SUFFIXES = ("document", "chat", "argument")
+
+
+def _resolve_edit_paths(s: str, cwd: Path) -> list[Path]:
+    """Return all companion files sharing the same primary stem as `s`.
+
+    If `s` names an existing file directly, return just that file.  Otherwise
+    find the primary stem via abbreviation match and return all companions
+    (.document.md, .chat.md, .argument.md) plus the bare .md if present.
+    """
+    candidate = Path(s) if Path(s).is_absolute() else cwd / s
+    if candidate.exists():
+        return [candidate]
+
+    primary = _resolve_path_abbrev(s, cwd, secondary_priority=_COMPANION_SUFFIXES)
+    if primary is None:
+        return []
+
+    stem = primary.name
+    for sec in _COMPANION_SUFFIXES:
+        if stem.endswith(f".{sec}.md"):
+            stem = stem[: -len(f".{sec}.md")]
+            break
+    else:
+        stem = stem[:-3]  # strip .md
+
+    results = []
+    for sec in _COMPANION_SUFFIXES:
+        p = cwd / f"{stem}.{sec}.md"
+        if p.exists():
+            results.append(p)
+    bare = cwd / f"{stem}.md"
+    if bare.exists():
+        results.append(bare)
+    return results or [primary]
+
+
 _SPECIAL_LINE_RE = re.compile(
     r"^(?:#|[-*+] |\d+\. |\| |    |\t|[-*_]{3,}\s*$)"
 )
@@ -209,6 +246,7 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 since=args.since,
                 no_write=args.no_assessment,
+                no_numbers=args.no_numbers,
             )
         if args.command == "index":
             return run_index(
@@ -297,10 +335,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "edit":
             if _require_bare(args.path):
                 return 1
-            path = _resolve_path_abbrev(args.path, Path.cwd())
-            if path is None:
+            paths = _resolve_edit_paths(args.path, Path.cwd())
+            if not paths:
                 return 1
-            return run_edit(path)
+            return run_edit(paths)
         if args.command == "files":
             if getattr(args, "files_command", None) == "ls":
                 return run_files_ls()
@@ -371,6 +409,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Print doc reviews and save state to JSON but skip interim/final assessments and do not write REVIEW files.",
+    )
+    review_parser.add_argument(
+        "--no-numbers",
+        action="store_true",
+        default=False,
+        help="Reference documents by date and title rather than by number.",
     )
 
     # relate
@@ -605,12 +649,13 @@ def run_config() -> int:
     return 0
 
 
-def run_edit(path: Path) -> int:
+def run_edit(paths: list[Path]) -> int:
     editor_cmd = os.environ.get("EDITOR")
     if not editor_cmd:
-        print(str(path))
+        for p in paths:
+            print(str(p))
         return 0
-    subprocess.run([editor_cmd, str(path)])
+    subprocess.run([editor_cmd, *[str(p) for p in paths]])
     return 0
 
 
@@ -1667,32 +1712,57 @@ def _truncate_review_since(out_path: Path, assessments_path: Path, all_docs: lis
     _truncate_file_since(assessments_path, keep_interims, names_to_remove)
 
 
-def _get_active_reviewed_docs(path: Path) -> list[tuple[int, str]]:
-    """Return (doc_num, filename) for docs in a review file that aren't tombstoned."""
+def _get_active_reviewed_docs(path: Path) -> list[tuple[str, str]]:
+    """Return (header, filename) for docs in a review file that aren't tombstoned.
+
+    Handles both numbered headers ('Doc N: filename.md') and unnumbered headers
+    ('Title (YYYY-MM-DD)' with a '<!-- source: filename -->' comment in the body).
+    """
     if not path.exists():
         return []
     import re
     content = path.read_text(encoding="utf-8")
     results = []
-    for m in re.finditer(r'\n# Doc (\d+): ([^\n]+)\n\n(.*?)(?=\n\n---|\Z)', content, re.DOTALL):
-        doc_num = int(m.group(1))
-        filename = m.group(2).strip()
-        body = m.group(3).strip()
-        if body != f"Doc {doc_num} was removed.":
-            results.append((doc_num, filename))
+    for m in re.finditer(r'\n# ([^\n]+)\n\n(.*?)(?=\n\n---|\Z)', content, re.DOTALL):
+        header = m.group(1).strip()
+        body = m.group(2).strip()
+        if re.match(r'(?:Interim \d+|Final Interim|Final Assessment)', header):
+            continue
+        numbered_m = re.match(r'Doc \d+: (.+)', header)
+        if numbered_m:
+            filename = numbered_m.group(1).strip()
+            tombstoned = re.match(r'Doc \d+ was removed\.$', body)
+        else:
+            src_m = re.search(r'<!-- source: ([^\s>]+) -->', body)
+            if not src_m:
+                continue
+            filename = src_m.group(1)
+            body_text = re.sub(r'<!-- source: [^\s>]+ -->\s*', '', body).strip()
+            tombstoned = body_text.endswith(" was removed.")
+        if not tombstoned:
+            results.append((header, filename))
     return results
 
 
-def _tombstone_doc_in_file(path: Path, doc_num: int, filename: str) -> None:
-    """Replace a doc's review body with a tombstone message."""
+def _tombstone_entry_in_file(path: Path, header: str) -> None:
+    """Replace a doc entry's body with a tombstone, preserving any source comment."""
     if not path.exists():
         return
     import re
     content = path.read_text(encoding="utf-8")
-    header = re.escape(f"Doc {doc_num}: {filename}")
+    numbered_m = re.match(r'(Doc \d+):', header)
+    tombstone_text = f"{numbered_m.group(1)} was removed." if numbered_m else f"{header} was removed."
+    escaped = re.escape(header)
+
+    def _replace(m: re.Match) -> str:
+        body = m.group(2)
+        src_m = re.search(r'<!-- source: [^\s>]+ -->\n*', body)
+        src_comment = (src_m.group(0).rstrip("\n") + "\n\n") if src_m else ""
+        return f"\n# {header}\n\n{src_comment}{tombstone_text}\n\n---"
+
     new_content = re.sub(
-        rf'(\n# {header}\n\n)(.*?)(\n\n---)',
-        rf'\g<1>Doc {doc_num} was removed.\3',
+        rf'(\n# {escaped}\n\n)(.*?)(\n\n---)',
+        _replace,
         content,
         flags=re.DOTALL,
     )
@@ -1700,27 +1770,23 @@ def _tombstone_doc_in_file(path: Path, doc_num: int, filename: str) -> None:
         path.write_text(new_content, encoding="utf-8")
 
 
-def _annotate_removed_doc_in_assessments(path: Path, doc_num: int, filename: str) -> None:
+def _annotate_removed_entry_in_assessments(path: Path, header: str, filename: str) -> None:
     """Append a removal note to any interim/final sections that mention the removed doc."""
     if not path.exists():
         return
     import re
     content = path.read_text(encoding="utf-8")
     stem = Path(filename).stem
-    note = f"\n\n[Note: Doc {doc_num} ({filename}) was subsequently removed from the library.]"
+    note = f"\n\n[Note: {header} ({filename}) was subsequently removed from the library.]"
 
     def _add_note(m: re.Match) -> str:
         section = m.group(0)
-        if (
-            f"Doc {doc_num}" in section
-            or filename in section
-            or stem in section
-        ) and note not in section:
+        if (header in section or filename in section or stem in section) and note not in section:
             return section[:-len("\n\n---")] + note + "\n\n---"
         return section
 
     new_content = re.sub(
-        r'\n# (?!Doc \d+:)[^\n]+\n\n.*?\n\n---',
+        r'\n# (?:Interim \d+|Final Interim|Final Assessment)[^\n]*\n\n.*?\n\n---',
         _add_note,
         content,
         flags=re.DOTALL,
@@ -1729,7 +1795,7 @@ def _annotate_removed_doc_in_assessments(path: Path, doc_num: int, filename: str
         path.write_text(new_content, encoding="utf-8")
 
 
-def run_review(library_path: str | None, reset: bool, dry_run: bool = False, since: str | None = None, no_write: bool = False) -> int:
+def run_review(library_path: str | None, reset: bool, dry_run: bool = False, since: str | None = None, no_write: bool = False, no_numbers: bool = False) -> int:
     import hashlib
     from mdc.config import _state_dir
     from mdc.anthropic_client import AnthropicChatClient
@@ -1738,10 +1804,12 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         _DEFAULT_FINAL_PROMPT,
         _DEFAULT_INTERIM_PROMPT,
         _DEFAULT_SYSTEM_PROMPT,
+        _DEFAULT_SYSTEM_PROMPT_UNNUMBERED,
         _REVIEW_PROMPTS_DIR,
         build_doc_content,
         build_review_messages,
         estimate_review_cost,
+        extract_doc_heading,
         list_review_docs,
         load_prompt,
         load_review_state,
@@ -1778,7 +1846,8 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         assessments_path.unlink(missing_ok=True)
         print("State and output file reset.")
 
-    system_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "system.md", _DEFAULT_SYSTEM_PROMPT)
+    default_system = _DEFAULT_SYSTEM_PROMPT_UNNUMBERED if no_numbers else _DEFAULT_SYSTEM_PROMPT
+    system_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "system.md", default_system)
     interim_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "interim.md", _DEFAULT_INTERIM_PROMPT)
     final_interim_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "final-interim.md", _DEFAULT_FINAL_INTERIM_PROMPT)
     final_prompt_text = load_prompt(_REVIEW_PROMPTS_DIR / "final.md", _DEFAULT_FINAL_PROMPT)
@@ -1791,6 +1860,15 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
     state = load_review_state(state_path)
     total = len(all_docs)
 
+    # Establish or enforce numbering mode.
+    if state.doc_index == 0:
+        state.numbered = not no_numbers
+    elif state.numbered == no_numbers:
+        mode_label = "unnumbered" if no_numbers else "numbered"
+        stored_label = "unnumbered" if not state.numbered else "numbered"
+        print(f"Warning: --no-numbers={no_numbers} conflicts with stored mode ({stored_label}). Using stored mode.")
+        no_numbers = not state.numbered
+
     # Check whether previously reviewed docs are still in the library.
     if not reset and (out_path.exists() or state.doc_index > 0):
         active_reviewed = _get_active_reviewed_docs(out_path)
@@ -1798,8 +1876,8 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         missing = [(n, fn) for n, fn in active_reviewed if fn not in library_filenames]
         if missing:
             print("\nThe following previously reviewed documents are no longer in the library:")
-            for doc_num, fn in missing:
-                print(f"  Doc {doc_num}: {fn}")
+            for header, fn in missing:
+                print(f"  {header}" if fn in header else f"  {header} [{fn}]")
             try:
                 answer = input("\nWere these intentionally removed? [y/N] ").strip().lower()
             except EOFError:
@@ -1808,11 +1886,11 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
                 print("Aborted. Verify the library before proceeding.")
                 return 1
             removed_names = {fn for _, fn in missing}
-            for doc_num, fn in missing:
-                _tombstone_doc_in_file(out_path, doc_num, fn)
-                _tombstone_doc_in_file(assessments_path, doc_num, fn)
-                _annotate_removed_doc_in_assessments(out_path, doc_num, fn)
-                _annotate_removed_doc_in_assessments(assessments_path, doc_num, fn)
+            for header, fn in missing:
+                _tombstone_entry_in_file(out_path, header)
+                _tombstone_entry_in_file(assessments_path, header)
+                _annotate_removed_entry_in_assessments(out_path, header, fn)
+                _annotate_removed_entry_in_assessments(assessments_path, header, fn)
             state.responses = [r for r in state.responses if r["filename"] not in removed_names]
             # Recompute doc_index: first position in current all_docs not yet reviewed.
             reviewed_names = {fn for _, fn in active_reviewed if fn not in removed_names}
@@ -1912,10 +1990,11 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
             reasoning_effort="medium",
         )
 
-    def _append_output(header: str, text: str, assessment: bool = False) -> None:
+    def _append_output(header: str, text: str, assessment: bool = False, source: str | None = None) -> None:
         if no_write:
             return
-        entry = f"\n# {header}\n\n{text}\n\n---\n"
+        body = f"<!-- source: {source} -->\n\n{text}" if source else text
+        entry = f"\n# {header}\n\n{body}\n\n---\n"
         with out_path.open("a", encoding="utf-8") as fh:
             fh.write(entry)
         if assessment:
@@ -1930,16 +2009,24 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
     while state.doc_index < total:
         doc_num = state.doc_index + 1
         doc_path = all_docs[state.doc_index]
-        user_content = build_doc_content(doc_path, doc_num)
+        if state.numbered:
+            label = f"Doc {doc_num}: {doc_path.name}"
+            source_comment = None
+        else:
+            date = doc_path.name[:10] if len(doc_path.name) > 10 and doc_path.name[4] == "-" else ""
+            title = extract_doc_heading(doc_path)
+            label = f"{title} ({date})" if date else title
+            source_comment = doc_path.name
+        user_content = build_doc_content(doc_path, label)
         messages = build_review_messages(state.interims[-1:], state.responses[-_REVIEW_WINDOW:], user_content)
 
-        print(f"\nDoc {doc_num}/{total}: {doc_path.name}")
+        print(f"\n{label}")
         reply = _call_doc(messages)
         print()
         _record_cost(reply)
 
-        _append_output(f"Doc {doc_num}: {doc_path.name}", reply.text)
-        state.responses.append({"doc_num": doc_num, "filename": doc_path.name, "text": reply.text})
+        _append_output(label, reply.text, source=source_comment)
+        state.responses.append({"doc_num": doc_num, "filename": doc_path.name, "label": label, "text": reply.text})
         if len(state.responses) > _REVIEW_WINDOW:
             state.responses.pop(0)
         state.doc_index += 1
@@ -2205,7 +2292,7 @@ def _reply_anthropic(
         if preloaded:
             library_context += "\n\nPre-looked-up Personal Library terms:\n\n" + "\n\n".join(preloaded)
         if related_summaries:
-            library_context += "\n\nThe following Personal Library documents are already known to be relevant to this transcript. If the conversation asks you to read them, call read_document on each before composing your reply. You may also use their index terms as starting points for lookup_term to discover adjacent material:\n\n" + "\n\n".join(related_summaries)
+            library_context += "\n\nThe following Personal Library documents are already known to be relevant to this transcript. If the conversation asks you to read them, call read_document on each before composing your reply. Each summary lists the document's own Related documents — these reflect the author's own judgment of relevance and are a reliable starting point for following a reference chain; call read_document on any that seem pertinent. Use lookup_term to cast a wider net via semantic indexing, which is more thorough but less targeted:\n\n" + "\n\n".join(related_summaries)
 
         missing_terms: list[str] = []
 

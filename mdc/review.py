@@ -9,7 +9,7 @@ DEFAULT_WINDOW = 50
 
 _REVIEW_PROMPTS_DIR = Path("~/.config/mdc/review").expanduser()
 
-_DEFAULT_SYSTEM_PROMPT = """\
+_SYSTEM_PROMPT_HEAD = """\
 Document Review
 
 You are reading a collection of documents delivered one at a time in chronological order.
@@ -24,10 +24,22 @@ documents may be exploratory; the latest may be mature. Watch for the arc.
 
 READING PROTOCOL:
 - Each user turn delivers one document. Read it and respond.
+"""
+
+_SYSTEM_PROMPT_HEADING_NUMBERED = """\
 - Begin each response with a bold title in this exact format:
   **Doc N — "Document Title" (YYYY-MM-DD)**
   where N is the document number, the title is the document's own title, and the date is the \
 document date.
+"""
+
+_SYSTEM_PROMPT_HEADING_UNNUMBERED = """\
+- Begin each response with a bold title in this exact format:
+  **"Document Title" (YYYY-MM-DD)**
+  where the title is the document's own title and the date is the document date.
+"""
+
+_SYSTEM_PROMPT_TAIL = """\
 - Respond in proportion to the document's length: roughly 300 words for short pieces \
 (under 100 lines), 500 for medium (100–300 lines), 800 for long ones (over 300 lines). \
 Stay sharp and assessorial — never exhaust the argument.
@@ -42,6 +54,9 @@ quotes where they matter) rather than abstract.
 
 The first document follows immediately. Begin reading.
 """
+
+_DEFAULT_SYSTEM_PROMPT = _SYSTEM_PROMPT_HEAD + _SYSTEM_PROMPT_HEADING_NUMBERED + _SYSTEM_PROMPT_TAIL
+_DEFAULT_SYSTEM_PROMPT_UNNUMBERED = _SYSTEM_PROMPT_HEAD + _SYSTEM_PROMPT_HEADING_UNNUMBERED + _SYSTEM_PROMPT_TAIL
 
 _DEFAULT_INTERIM_PROMPT = """\
 Interim Assessment
@@ -141,6 +156,7 @@ class ReviewState:
     cumulative_cost: float = 0.0
     final_interim_done: bool = False
     final_done: bool = False
+    numbered: bool = True
 
 
 def load_review_state(path: Path) -> ReviewState:
@@ -155,6 +171,7 @@ def load_review_state(path: Path) -> ReviewState:
             cumulative_cost=float(data.get("cumulative_cost", 0.0)),
             final_interim_done=bool(data.get("final_interim_done", False)),
             final_done=bool(data.get("final_done", False)),
+            numbered=bool(data.get("numbered", True)),
         )
     except (json.JSONDecodeError, ValueError):
         return ReviewState()
@@ -211,10 +228,21 @@ def estimate_review_cost(
     return (doc_input + synth_input) * in_rate / 1_000_000 + (doc_output + synth_output) * out_rate / 1_000_000
 
 
-def build_doc_content(doc_path: Path, doc_num: int) -> list[dict]:
+def extract_doc_heading(path: Path) -> str:
+    """Return the first '# Title' heading from a document, or a slug derived from the filename."""
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("# "):
+                return line[2:].strip()
+    except OSError:
+        pass
+    return path.stem.replace("-", " ").title()
+
+
+def build_doc_content(doc_path: Path, label: str) -> list[dict]:
     """Return the user_content blocks for a single document turn."""
     lines = doc_path.read_text(encoding="utf-8").splitlines()
-    text = f"Document {doc_num}: {doc_path.name} ({len(lines)} lines)\n\n" + "\n".join(lines)
+    text = f"Document: {label} ({len(lines)} lines)\n\n" + "\n".join(lines)
     return [{"type": "text", "text": text}]
 
 
@@ -242,14 +270,9 @@ def build_review_messages(
             "content": "Understood — I have all interim assessments in view.",
         })
     for entry in assessments:
-        messages.append({
-            "role": "user",
-            "content": f"Document {entry['doc_num']}: {entry['filename']}",
-        })
-        messages.append({
-            "role": "assistant",
-            "content": entry["text"],
-        })
+        label = entry.get("label") or f"Document {entry['doc_num']}: {entry['filename']}"
+        messages.append({"role": "user", "content": label})
+        messages.append({"role": "assistant", "content": entry["text"]})
     messages.append({"role": "user", "content": user_content})
     return messages
 
