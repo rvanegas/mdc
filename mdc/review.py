@@ -48,29 +48,14 @@ the entire assessment.
 Write with the confidence of someone who has read carefully and formed genuine views.
 """
 
-_DEFAULT_SELECTION_PROMPT = """\
-Document Selection
-
-You have written the segment assessments above, which cover the full collection. Before \
-writing the final comprehensive assessment, select up to 30 documents you would most \
-benefit from reading directly — those where the original text would ground, correct, or \
-deepen what you write. Rank them in order of preference, most important first.
-
-Available documents:
-
-{title_list}
-
-Respond with a numbered list of titles only, in order of preference. Use exact titles \
-as listed. Do not explain your choices.
-"""
 
 _DEFAULT_FINAL_PROMPT = """\
 Comprehensive Assessment
 
 The segment assessments above cover the full collection in chronological order. Treat \
-them as load-bearing evidence. The documents that follow are those you selected for \
-direct reference — use them to ground specific claims and deepen the assessment. Draw \
-on all of this material to give a full and considered assessment covering:
+them as load-bearing evidence. The document assessments that follow are fresh readings \
+of the documents you selected — use them to ground specific claims and deepen the \
+assessment. Draw on all of this material to give a full and considered assessment covering:
 
 (Do not begin your response with a top-level heading or title. Start directly with the \
 body of the assessment.)
@@ -97,6 +82,7 @@ Take the space this requires.
 class ReviewState:
     doc_index: int = 0
     interims: list[dict] = field(default_factory=list)  # {"header", "text", "after_doc"}
+    doc_reviews: list[dict] = field(default_factory=list)  # {"filename", "label", "text"} — pre-final checkpoints
     cumulative_cost: float = 0.0
     final_done: bool = False
     final_text: str | None = None
@@ -118,6 +104,7 @@ def load_review_state(path: Path) -> ReviewState:
         return ReviewState(
             doc_index=int(data.get("doc_index", 0)),
             interims=interims,
+            doc_reviews=list(data.get("doc_reviews", [])),
             cumulative_cost=float(data.get("cumulative_cost", 0.0)),
             final_done=bool(data.get("final_done", False)),
             final_text=data.get("final_text"),
@@ -227,76 +214,50 @@ def extract_mentioned_titles(texts: list[str], known_titles: list[str], min_leng
     return [t for t in known_titles if len(t) >= min_length and t.lower() in combined]
 
 
-def build_selection_messages(interims: list[dict], known_titles: list[str]) -> list[dict]:
-    """Build messages for the document selection pre-call."""
-    from mdc.review import _DEFAULT_SELECTION_PROMPT
-    block = "\n\n---\n\n".join(
-        f"{_interim_label(entry['header'])}:\n{entry['text']}" for entry in interims
+
+def _doc_review_word_limit(word_count: int) -> int:
+    if word_count < 1000:
+        return 300
+    elif word_count <= 3000:
+        return 500
+    return 800
+
+
+def build_doc_review_messages(doc_path: Path) -> list[dict]:
+    """Build messages for a single-document review call (for final context)."""
+    date = doc_path.name[:10] if len(doc_path.name) > 10 and doc_path.name[4] == "-" else ""
+    title = extract_doc_heading(doc_path)
+    label = f'"{title}" ({date})' if date else f'"{title}"'
+    text = doc_path.read_text(encoding="utf-8")
+    word_count = len(text.split())
+    word_limit = _doc_review_word_limit(word_count)
+    prompt = (
+        f"Write a {word_limit}-word assessment of this document. "
+        "What does it contribute to the collection's main intellectual threads? "
+        "Be specific and assessorial."
     )
-    title_list = "\n".join(f"- {t}" for t in sorted(known_titles))
-    prompt = _DEFAULT_SELECTION_PROMPT.format(title_list=title_list)
     return [{"role": "user", "content": [
-        {"type": "text", "text": block, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": f"Document: {label}\n\n{text}"},
         {"type": "text", "text": prompt},
     ]}]
-
-
-def parse_selected_titles(response_text: str, known_titles: list[str]) -> list[str]:
-    """Extract an ordered list of known titles from the model's selection response."""
-    import re
-    known_lower = {t.lower(): t for t in known_titles}
-    selected = []
-    seen = set()
-    for line in response_text.splitlines():
-        line = re.sub(r'^\s*\d+[\.)]\s*', '', line).strip().strip('*').strip()
-        if not line:
-            continue
-        match = known_lower.get(line.lower())
-        if match and match not in seen:
-            selected.append(match)
-            seen.add(match)
-    return selected
 
 
 def build_final_messages(
     interims: list[dict],
     final_prompt: str,
-    ranked_docs: list[Path] | None = None,
-    token_budget: int = 164_000,
-) -> tuple[list[dict], list[Path]]:
-    """Build messages for the final assessment call.
-
-    Adds ranked_docs in preference order until the token budget is exhausted.
-    Returns (messages, docs_included).
-    """
+    selected_reviews: str | None = None,
+) -> list[dict]:
+    """Build messages for the final assessment call."""
     block = "\n\n---\n\n".join(
         f"{_interim_label(entry['header'])}:\n{entry['text']}" for entry in interims
     )
     content: list[dict] = [
         {"type": "text", "text": block, "cache_control": {"type": "ephemeral"}},
     ]
-
-    included: list[Path] = []
-    if ranked_docs:
-        remaining = token_budget
-        doc_parts: list[str] = []
-        for doc_path in ranked_docs:
-            text = doc_path.read_text(encoding="utf-8")
-            date = doc_path.name[:10] if len(doc_path.name) > 10 and doc_path.name[4] == "-" else ""
-            title = extract_doc_heading(doc_path)
-            label = f'"{title}" ({date})' if date else f'"{title}"'
-            entry_text = f"Document: {label}\n\n{text}"
-            cost = len(entry_text) // 4
-            if cost > remaining:
-                break
-            doc_parts.append(entry_text)
-            included.append(doc_path)
-            remaining -= cost
-        if doc_parts:
-            content.append({"type": "text", "text": "\n\n---\n\n".join(doc_parts)})
-
+    if selected_reviews:
+        content.append({"type": "text", "text": selected_reviews})
     content.append({"type": "text", "text": final_prompt})
-    return [{"role": "user", "content": content}], included
+    return [{"role": "user", "content": content}]
 
 
 def build_assessments_md(state: ReviewState, include_toc: bool = False) -> str:
@@ -307,6 +268,25 @@ def build_assessments_md(state: ReviewState, include_toc: bool = False) -> str:
     if state.final_text:
         parts.append(f"\n# Final Assessment\n\n{state.final_text}\n\n---\n")
     return "".join(parts)
+
+
+def generate_include_list(titles: list[str]) -> str:
+    lines = [
+        "<!-- Documents to review before the final assessment. One title per line.",
+        "     Titles must match library entries exactly. -->",
+        "",
+    ]
+    lines += [f"- {t}" for t in titles]
+    return "\n".join(lines) + "\n"
+
+
+def load_include_list(path: Path) -> list[str]:
+    titles = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("- "):
+            titles.append(line[2:].strip())
+    return titles
 
 
 def load_prompt(prompt_file: Path | None, default: str) -> str:

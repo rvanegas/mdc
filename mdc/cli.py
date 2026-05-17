@@ -1696,20 +1696,22 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         _DEFAULT_FINAL_PROMPT,
         _DEFAULT_INTERIM_PROMPT,
         _DEFAULT_SYSTEM_PROMPT,
-        _DEFAULT_SELECTION_PROMPT,
         _REVIEW_PROMPTS_DIR,
         DEFAULT_WINDOW,
         build_assessments_md,
+        build_doc_review_messages,
         build_interim_messages,
         build_final_messages,
-        build_selection_messages,
-        parse_selected_titles,
+        extract_doc_heading,
+        extract_mentioned_titles,
+        generate_include_list,
+        load_include_list,
         list_review_docs,
         load_prompt,
         load_review_state,
         save_review_state,
     )
-    from mdc.library import REVIEW_FILENAME
+    from mdc.library import REVIEW_FILENAME, REVIEW_INCLUDE_FILENAME
 
     config = load_config()
     effective_model = config.model
@@ -1865,33 +1867,64 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         title_to_path = {e.title: lib_path / Path(e.rel_path) for e in entries}
         known_titles = list(title_to_path.keys())
 
-        # Ask the model which documents it wants to read before the final assessment.
-        print(f"\n>>> Document selection <<<\n")
-        selection_messages = build_selection_messages(state.interims, known_titles)
-        selection_reply = _call_synthesis(selection_messages)
-        print()
-        _record_cost(selection_reply)
+        include_path = lib_path / REVIEW_INCLUDE_FILENAME
 
-        ranked_titles = parse_selected_titles(selection_reply.text, known_titles)[:30]
-        ranked_docs = [title_to_path[t] for t in ranked_titles if t in title_to_path and title_to_path[t].exists()]
+        if not include_path.exists():
+            # Generate starting list from interims and pause for user to edit.
+            interim_texts = [e["text"] for e in state.interims]
+            mentioned_titles = extract_mentioned_titles(interim_texts, known_titles)
+            include_path.write_text(generate_include_list(mentioned_titles), encoding="utf-8")
+            print(f"\nInclude list written to {include_path.name} ({len(mentioned_titles)} titles).")
+            print("Edit it, then run 'mdc review' again to proceed with the final assessment.")
+            return 0
 
-        # Compute token budget: 200k minus interims, system, final prompt, output buffer.
-        interim_tokens = sum(len(e["text"]) for e in state.interims) // 4
-        token_budget = 200_000 - interim_tokens - 500 - 4_000
+        titles = load_include_list(include_path)
+        mentioned_docs = [
+            title_to_path[t] for t in titles
+            if t in title_to_path and title_to_path[t].exists()
+        ]
+
+        cached = {r["filename"]: r for r in state.doc_reviews}
+        remaining_docs = [d for d in mentioned_docs if d.name not in cached]
+        done = len(mentioned_docs) - len(remaining_docs)
+
+        print(f"\n>>> Reviewing {len(mentioned_docs)} mentioned documents <<<\n")
+        if done:
+            print(f"  {done} already reviewed, resuming from doc {done + 1}.\n")
+
+        for doc_path in remaining_docs:
+            date = doc_path.name[:10] if len(doc_path.name) > 10 and doc_path.name[4] == "-" else ""
+            title = extract_doc_heading(doc_path)
+            label = f'"{title}" ({date})' if date else f'"{title}"'
+            print(f"\n[{len(cached) + 1}/{len(mentioned_docs)}] {label}")
+            review_reply = client.generate_reply(
+                system_content,
+                build_doc_review_messages(doc_path),
+                on_delta=_print_reply_delta,
+                reasoning_effort="none",
+            )
+            print()
+            _record_cost(review_reply)
+            entry = {"filename": doc_path.name, "label": label, "text": review_reply.text}
+            state.doc_reviews.append(entry)
+            cached[doc_path.name] = entry
+            save_review_state(state, state_path)
+
+        all_reviews = [cached[d.name]["text"] for d in mentioned_docs if d.name in cached]
+        selected_reviews = "\n\n---\n\n".join(
+            f"{cached[d.name]['label']}:\n\n{cached[d.name]['text']}"
+            for d in mentioned_docs if d.name in cached
+        ) if all_reviews else None
 
         print(f"\n>>> Final assessment <<<\n")
-        messages, included = build_final_messages(state.interims, final_prompt_text, ranked_docs, token_budget)
-        if included:
-            print(f"  Documents included ({len(included)} of {len(ranked_docs)} selected):")
-            for p in included:
-                print(f"    {p.name}")
-            print()
+        messages = build_final_messages(state.interims, final_prompt_text, selected_reviews)
         reply = _call_synthesis(messages)
         print()
         _record_cost(reply)
         _write_output("Final Assessment", reply.text)
         state.final_text = reply.text
         state.final_done = True
+        state.doc_reviews = []
         save_review_state(state, state_path)
         _prepend_toc(out_path)
 
