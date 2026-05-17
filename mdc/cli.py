@@ -1688,6 +1688,26 @@ def _prepend_toc(out_path: Path) -> None:
         out_path.write_text(_TOC_BLOCK + content, encoding="utf-8")
 
 
+def _render_review_pdfs(*md_paths: Path) -> None:
+    import subprocess
+    for md_path in md_paths:
+        pdf_path = md_path.with_suffix(".pdf")
+        for engine in ("xelatex", None):
+            cmd = ["pandoc", str(md_path), "-o", str(pdf_path)]
+            if engine:
+                cmd += [f"--pdf-engine={engine}"]
+            try:
+                subprocess.run(cmd, check=True, capture_output=True)
+                print(f"Wrote {pdf_path.name}.")
+                break
+            except FileNotFoundError:
+                print("pandoc not found; skipping PDF generation.")
+                return
+            except subprocess.CalledProcessError as e:
+                if engine is None:
+                    print(f"pandoc error on {md_path.name}: {e.stderr.decode()[:300]}")
+
+
 def run_review(library_path: str | None, reset: bool, dry_run: bool = False, since: str | None = None, no_write: bool = False, rebuild: bool = False) -> int:
     import hashlib
     from mdc.config import _state_dir
@@ -1698,11 +1718,13 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         _DEFAULT_SYSTEM_PROMPT,
         _REVIEW_PROMPTS_DIR,
         DEFAULT_WINDOW,
+        build_assessment_md,
         build_assessments_md,
         build_doc_review_messages,
         build_final_messages,
         build_interim_messages,
         build_manifest_summaries,
+        build_reviews_md,
         extract_doc_heading,
         extract_mentioned_titles,
         generate_include_list,
@@ -1710,9 +1732,15 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         list_review_docs,
         load_prompt,
         load_review_state,
+        sanitize_for_pandoc,
         save_review_state,
     )
-    from mdc.library import REVIEW_FILENAME, REVIEW_INCLUDE_FILENAME
+    from mdc.library import (
+        ASSESSMENT_FILENAME,
+        REVIEW_FILENAME,
+        REVIEW_INCLUDE_FILENAME,
+        REVIEWS_FILENAME,
+    )
 
     config = load_config()
     effective_model = config.model
@@ -1748,6 +1776,21 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         content = build_assessments_md(state, include_toc=include_toc)
         out_path.write_text(content, encoding="utf-8")
         print(f"Rebuilt {out_path.name} ({len(state.interims)} segments, final={'yes' if state.final_done else 'no'}).")
+
+        if state.final_done:
+            from mdc.library import load_entries
+            entries = load_entries(lib_path)
+
+            assessment_path = lib_path / ASSESSMENT_FILENAME
+            assessment_path.write_text(build_assessment_md(state), encoding="utf-8")
+            print(f"Wrote {ASSESSMENT_FILENAME}.")
+
+            reviews_path = lib_path / REVIEWS_FILENAME
+            reviews_path.write_text(build_reviews_md(state, entries), encoding="utf-8")
+            print(f"Wrote {REVIEWS_FILENAME} ({len(state.doc_reviews)} individual reviews).")
+
+            _render_review_pdfs(assessment_path, reviews_path)
+
         return 0
 
     include_toc = True
@@ -1945,7 +1988,6 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         _record_cost(reply)
         state.final_text = reply.text
         state.final_done = True
-        state.doc_reviews = []
         save_review_state(state, state_path)
         if not no_write:
             out_path.write_text(build_assessments_md(state, include_toc=include_toc), encoding="utf-8")

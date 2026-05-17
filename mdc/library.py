@@ -16,6 +16,8 @@ REFERENCES_FILENAME = "REFERENCES.md"
 RELATED_FILENAME = "RELATED.md"
 REVIEW_FILENAME = "REVIEW.md"
 REVIEW_INCLUDE_FILENAME = "REVIEW_INCLUDE.md"
+ASSESSMENT_FILENAME = "ASSESSMENT.md"
+REVIEWS_FILENAME = "REVIEWS.md"
 from mdc.config import _state_dir as _mdc_state_dir
 _STATE_DIR = _mdc_state_dir
 _STATE_PATH = _STATE_DIR / "library-manifest.json"
@@ -579,7 +581,7 @@ def build_index(
     result = []
 
     for md_path in sorted(library_path.rglob("*.md")):
-        if md_path.name in (MANIFEST_FILENAME, INDEX_FILENAME, KEYS_FILENAME, REFERENCES_FILENAME, RELATED_FILENAME, REVIEW_FILENAME, REVIEW_INCLUDE_FILENAME):
+        if md_path.name in (MANIFEST_FILENAME, INDEX_FILENAME, KEYS_FILENAME, REFERENCES_FILENAME, RELATED_FILENAME, REVIEW_FILENAME, REVIEW_INCLUDE_FILENAME, ASSESSMENT_FILENAME, REVIEWS_FILENAME):
             continue
         if (library_path / "REVISIONS") in md_path.parents:
             continue

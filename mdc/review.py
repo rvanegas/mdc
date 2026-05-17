@@ -179,6 +179,17 @@ _TOC_BLOCK = """\
 
 """
 
+_SUBSCRIPT_MAP = str.maketrans(
+    "₀₁₂₃₄₅₆₇₈₉ₐₑₒₓₔₕₖₗₘₙₚₛₜ",
+    "0123456789aeoxehklmnpst",
+)
+_SUPERSCRIPT_MAP = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
+
+
+def sanitize_for_pandoc(text: str) -> str:
+    """Replace characters that cause pandoc/LaTeX failures."""
+    return text.translate(_SUBSCRIPT_MAP).translate(_SUPERSCRIPT_MAP)
+
 
 def _interim_label(header: str) -> str:
     """Return the model-facing label for an interim, stripping doc-count info."""
@@ -285,6 +296,43 @@ def build_assessments_md(state: ReviewState, include_toc: bool = False) -> str:
     if state.final_text:
         parts.append(f"\n# Final Assessment\n\n{state.final_text}\n\n---\n")
     return "".join(parts)
+
+
+def build_assessment_md(state: ReviewState) -> str:
+    """ASSESSMENT.md: just the final assessment."""
+    if not state.final_text:
+        return ""
+    return sanitize_for_pandoc(f"# Final Assessment\n\n{state.final_text}\n")
+
+
+def build_reviews_md(state: ReviewState, entries) -> str:
+    """REVIEWS.md: final assessment followed by all ingredients."""
+    parts = [_TOC_BLOCK]
+
+    if state.final_text:
+        parts.append(f"\n# Final Assessment\n\n{state.final_text}\n\n---\n")
+
+    # Document summaries — exclude titles covered by individual reviews.
+    reviewed_titles: set[str] = set()
+    for r in state.doc_reviews:
+        label = r["label"]
+        if label.startswith('"'):
+            reviewed_titles.add(label.split('"')[1])
+    summary_text = build_manifest_summaries(entries, reviewed_titles)
+    if summary_text:
+        parts.append(f"\n# Document Summaries\n\n{summary_text}\n\n---\n")
+
+    if state.interims:
+        parts.append("\n# Segment Assessments\n")
+        for interim in state.interims:
+            parts.append(f"\n## {interim['header']}\n\n{interim['text']}\n\n---\n")
+
+    if state.doc_reviews:
+        parts.append("\n# Individual Reviews\n")
+        for review in state.doc_reviews:
+            parts.append(f"\n## {review['label']}\n\n{review['text']}\n\n---\n")
+
+    return sanitize_for_pandoc("".join(parts))
 
 
 def generate_include_list(titles: list[str]) -> str:
