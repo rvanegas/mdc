@@ -1750,6 +1750,7 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         print(f"Rebuilt {out_path.name} ({len(state.interims)} segments, final={'yes' if state.final_done else 'no'}).")
         return 0
 
+    include_toc = True
     system_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "system.md", _DEFAULT_SYSTEM_PROMPT)
     interim_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "interim.md", _DEFAULT_INTERIM_PROMPT)
     final_prompt_text = load_prompt(_REVIEW_PROMPTS_DIR / "final.md", _DEFAULT_FINAL_PROMPT)
@@ -1942,12 +1943,12 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         reply = _call_synthesis(messages)
         print()
         _record_cost(reply)
-        _write_output("Final Assessment", reply.text)
         state.final_text = reply.text
         state.final_done = True
         state.doc_reviews = []
         save_review_state(state, state_path)
-        _prepend_toc(out_path)
+        if not no_write:
+            out_path.write_text(build_assessments_md(state, include_toc=include_toc), encoding="utf-8")
 
     if state.doc_index < total:
         remaining = total - state.doc_index
