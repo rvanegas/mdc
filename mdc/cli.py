@@ -246,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 since=args.since,
                 no_write=args.no_assessment,
-                no_numbers=args.no_numbers,
+                rebuild=args.rebuild,
             )
         if args.command == "index":
             return run_index(
@@ -411,10 +411,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print doc reviews and save state to JSON but skip interim/final assessments and do not write REVIEW files.",
     )
     review_parser.add_argument(
-        "--no-numbers",
+        "--rebuild",
         action="store_true",
         default=False,
-        help="Reference documents by date and title rather than by number.",
+        help="Rebuild REVIEW.md from saved state without making API calls.",
     )
 
     # relate
@@ -1278,9 +1278,11 @@ def run_check(path: Path) -> int:
 
 def run_validate(paths: list[Path], force_transcript: bool = False) -> int:
     from mdc.library import is_library_transcript, resolve_title
+    from mdc.review import list_review_docs
 
     config = load_config()
     lib = config.library_path if config.library_path and config.library_path.is_dir() else None
+    doc_order = {p.name: i for i, p in enumerate(list_review_docs(lib))} if lib else {}
 
     any_errors = False
     for path in paths:
@@ -1297,8 +1299,11 @@ def run_validate(paths: list[Path], force_transcript: bool = False) -> int:
                 try:
                     transcript = parse_transcript(content)
                     for entry in transcript.related:
-                        if resolve_title(lib, entry) is None:
+                        rel_path = resolve_title(lib, entry)
+                        if rel_path is None:
                             errs.append(f"Related title not found in library: {entry!r}")
+                        elif doc_order.get(Path(rel_path).name, -1) >= doc_order.get(path.name, -1):
+                            errs.append(f"Related title does not precede this document: {entry!r}")
                 except TranscriptError:
                     pass
         else:
@@ -1683,139 +1688,28 @@ def _prepend_toc(out_path: Path) -> None:
         out_path.write_text(_TOC_BLOCK + content, encoding="utf-8")
 
 
-def _truncate_file_since(path: Path, keep_interims: int, names_to_remove: set) -> None:
-    if not path.exists():
-        return
-    import re
-    content = path.read_text(encoding="utf-8")
-    for m in re.finditer(r"\n# (.+)\n", content):
-        header = m.group(1)
-        if header.startswith("Doc "):
-            fn = header.split(": ", 1)[1] if ": " in header else ""
-            if fn in names_to_remove:
-                path.write_text(content[:m.start()], encoding="utf-8")
-                return
-        elif header.startswith("Interim "):
-            n = int(header.split()[1])
-            if n > keep_interims:
-                path.write_text(content[:m.start()], encoding="utf-8")
-                return
-        elif header.startswith("Final"):
-            path.write_text(content[:m.start()], encoding="utf-8")
-            return
-
-
-def _truncate_review_since(out_path: Path, assessments_path: Path, all_docs: list, start_pos: int, window: int) -> None:
-    names_to_remove = {d.name for d in all_docs[start_pos:]}
-    keep_interims = start_pos // window
-    _truncate_file_since(out_path, keep_interims, names_to_remove)
-    _truncate_file_since(assessments_path, keep_interims, names_to_remove)
-
-
-def _get_active_reviewed_docs(path: Path) -> list[tuple[str, str]]:
-    """Return (header, filename) for docs in a review file that aren't tombstoned.
-
-    Handles both numbered headers ('Doc N: filename.md') and unnumbered headers
-    ('Title (YYYY-MM-DD)' with a '<!-- source: filename -->' comment in the body).
-    """
-    if not path.exists():
-        return []
-    import re
-    content = path.read_text(encoding="utf-8")
-    results = []
-    for m in re.finditer(r'\n# ([^\n]+)\n\n(.*?)(?=\n\n---|\Z)', content, re.DOTALL):
-        header = m.group(1).strip()
-        body = m.group(2).strip()
-        if re.match(r'(?:Interim \d+|Final Interim|Final Assessment)', header):
-            continue
-        numbered_m = re.match(r'Doc \d+: (.+)', header)
-        if numbered_m:
-            filename = numbered_m.group(1).strip()
-            tombstoned = re.match(r'Doc \d+ was removed\.$', body)
-        else:
-            src_m = re.search(r'<!-- source: ([^\s>]+) -->', body)
-            if not src_m:
-                continue
-            filename = src_m.group(1)
-            body_text = re.sub(r'<!-- source: [^\s>]+ -->\s*', '', body).strip()
-            tombstoned = body_text.endswith(" was removed.")
-        if not tombstoned:
-            results.append((header, filename))
-    return results
-
-
-def _tombstone_entry_in_file(path: Path, header: str) -> None:
-    """Replace a doc entry's body with a tombstone, preserving any source comment."""
-    if not path.exists():
-        return
-    import re
-    content = path.read_text(encoding="utf-8")
-    numbered_m = re.match(r'(Doc \d+):', header)
-    tombstone_text = f"{numbered_m.group(1)} was removed." if numbered_m else f"{header} was removed."
-    escaped = re.escape(header)
-
-    def _replace(m: re.Match) -> str:
-        body = m.group(2)
-        src_m = re.search(r'<!-- source: [^\s>]+ -->\n*', body)
-        src_comment = (src_m.group(0).rstrip("\n") + "\n\n") if src_m else ""
-        return f"\n# {header}\n\n{src_comment}{tombstone_text}\n\n---"
-
-    new_content = re.sub(
-        rf'(\n# {escaped}\n\n)(.*?)(\n\n---)',
-        _replace,
-        content,
-        flags=re.DOTALL,
-    )
-    if new_content != content:
-        path.write_text(new_content, encoding="utf-8")
-
-
-def _annotate_removed_entry_in_assessments(path: Path, header: str, filename: str) -> None:
-    """Append a removal note to any interim/final sections that mention the removed doc."""
-    if not path.exists():
-        return
-    import re
-    content = path.read_text(encoding="utf-8")
-    stem = Path(filename).stem
-    note = f"\n\n[Note: {header} ({filename}) was subsequently removed from the library.]"
-
-    def _add_note(m: re.Match) -> str:
-        section = m.group(0)
-        if (header in section or filename in section or stem in section) and note not in section:
-            return section[:-len("\n\n---")] + note + "\n\n---"
-        return section
-
-    new_content = re.sub(
-        r'\n# (?:Interim \d+|Final Interim|Final Assessment)[^\n]*\n\n.*?\n\n---',
-        _add_note,
-        content,
-        flags=re.DOTALL,
-    )
-    if new_content != content:
-        path.write_text(new_content, encoding="utf-8")
-
-
-def run_review(library_path: str | None, reset: bool, dry_run: bool = False, since: str | None = None, no_write: bool = False, no_numbers: bool = False) -> int:
+def run_review(library_path: str | None, reset: bool, dry_run: bool = False, since: str | None = None, no_write: bool = False, rebuild: bool = False) -> int:
     import hashlib
     from mdc.config import _state_dir
     from mdc.anthropic_client import AnthropicChatClient
     from mdc.review import (
-        _DEFAULT_FINAL_INTERIM_PROMPT,
         _DEFAULT_FINAL_PROMPT,
         _DEFAULT_INTERIM_PROMPT,
         _DEFAULT_SYSTEM_PROMPT,
-        _DEFAULT_SYSTEM_PROMPT_UNNUMBERED,
+        _DEFAULT_SELECTION_PROMPT,
         _REVIEW_PROMPTS_DIR,
-        build_doc_content,
-        build_review_messages,
-        estimate_review_cost,
-        extract_doc_heading,
+        DEFAULT_WINDOW,
+        build_assessments_md,
+        build_interim_messages,
+        build_final_messages,
+        build_selection_messages,
+        parse_selected_titles,
         list_review_docs,
         load_prompt,
         load_review_state,
         save_review_state,
     )
-    from mdc.library import REVIEW_FILENAME, REVIEW_ASSESSMENTS_FILENAME
+    from mdc.library import REVIEW_FILENAME
 
     config = load_config()
     effective_model = config.model
@@ -1838,18 +1732,23 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
     path_hash = hashlib.sha256(str(lib_path).encode()).hexdigest()[:8]
     state_path = _state_dir / f"review-{path_hash}.json"
     out_path = lib_path / REVIEW_FILENAME
-    assessments_path = lib_path / REVIEW_ASSESSMENTS_FILENAME
 
     if reset:
         state_path.unlink(missing_ok=True)
         out_path.unlink(missing_ok=True)
-        assessments_path.unlink(missing_ok=True)
         print("State and output file reset.")
 
-    default_system = _DEFAULT_SYSTEM_PROMPT_UNNUMBERED if no_numbers else _DEFAULT_SYSTEM_PROMPT
-    system_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "system.md", default_system)
+    state = load_review_state(state_path)
+
+    if rebuild:
+        include_toc = state.final_done
+        content = build_assessments_md(state, include_toc=include_toc)
+        out_path.write_text(content, encoding="utf-8")
+        print(f"Rebuilt {out_path.name} ({len(state.interims)} segments, final={'yes' if state.final_done else 'no'}).")
+        return 0
+
+    system_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "system.md", _DEFAULT_SYSTEM_PROMPT)
     interim_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "interim.md", _DEFAULT_INTERIM_PROMPT)
-    final_interim_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "final-interim.md", _DEFAULT_FINAL_INTERIM_PROMPT)
     final_prompt_text = load_prompt(_REVIEW_PROMPTS_DIR / "final.md", _DEFAULT_FINAL_PROMPT)
 
     all_docs = list_review_docs(lib_path)
@@ -1857,50 +1756,7 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         print("No indexed documents found. Run 'mdc index' first.")
         return 1
 
-    state = load_review_state(state_path)
     total = len(all_docs)
-
-    # Establish or enforce numbering mode.
-    if state.doc_index == 0:
-        state.numbered = not no_numbers
-    elif state.numbered == no_numbers:
-        mode_label = "unnumbered" if no_numbers else "numbered"
-        stored_label = "unnumbered" if not state.numbered else "numbered"
-        print(f"Warning: --no-numbers={no_numbers} conflicts with stored mode ({stored_label}). Using stored mode.")
-        no_numbers = not state.numbered
-
-    # Check whether previously reviewed docs are still in the library.
-    if not reset and (out_path.exists() or state.doc_index > 0):
-        active_reviewed = _get_active_reviewed_docs(out_path)
-        library_filenames = {p.name for p in lib_path.rglob("*.md")}
-        missing = [(n, fn) for n, fn in active_reviewed if fn not in library_filenames]
-        if missing:
-            print("\nThe following previously reviewed documents are no longer in the library:")
-            for header, fn in missing:
-                print(f"  {header}" if fn in header else f"  {header} [{fn}]")
-            try:
-                answer = input("\nWere these intentionally removed? [y/N] ").strip().lower()
-            except EOFError:
-                answer = ""
-            if answer != "y":
-                print("Aborted. Verify the library before proceeding.")
-                return 1
-            removed_names = {fn for _, fn in missing}
-            for header, fn in missing:
-                _tombstone_entry_in_file(out_path, header)
-                _tombstone_entry_in_file(assessments_path, header)
-                _annotate_removed_entry_in_assessments(out_path, header, fn)
-                _annotate_removed_entry_in_assessments(assessments_path, header, fn)
-            state.responses = [r for r in state.responses if r["filename"] not in removed_names]
-            # Recompute doc_index: first position in current all_docs not yet reviewed.
-            reviewed_names = {fn for _, fn in active_reviewed if fn not in removed_names}
-            state.doc_index = next(
-                (i for i, d in enumerate(all_docs) if d.name not in reviewed_names),
-                len(all_docs),
-            )
-            total = len(all_docs)
-            save_review_state(state, state_path)
-            print(f"Tombstoned {len(missing)} removed doc(s). Resuming from doc {state.doc_index + 1}.")
 
     if since:
         since_name = Path(since).name
@@ -1908,58 +1764,44 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         if start_pos is None:
             print(f"Error: '{since_name}' not found in indexed documents.")
             return 1
-        doc_num_by_name = {d.name: i + 1 for i, d in enumerate(all_docs)}
-        reviewed_names = {d.name for d in all_docs[:start_pos]}
-        state.responses = [
-            {**r, "doc_num": doc_num_by_name[r["filename"]]}
-            for r in state.responses
-            if r["filename"] in reviewed_names
-        ]
-        state.interims = state.interims[:start_pos // _REVIEW_WINDOW]
-        state.doc_index = start_pos
-        state.final_interim_done = False
+        # Rewind to the segment boundary at or before start_pos.
+        segment_start = (start_pos // DEFAULT_WINDOW) * DEFAULT_WINDOW
+        state.interims = [e for e in state.interims if e["after_doc"] <= segment_start]
+        state.doc_index = segment_start
         state.final_done = False
+        state.final_text = None
         if not dry_run:
-            _truncate_review_since(out_path, assessments_path, all_docs, start_pos, _REVIEW_WINDOW)
+            out_path.write_text(build_assessments_md(state), encoding="utf-8")
             save_review_state(state, state_path)
-        print(f"State rewound to doc {start_pos + 1}: {since_name}")
+        print(f"State rewound to segment starting at doc {segment_start + 1}.")
 
     if state.final_done:
         if state.doc_index >= total:
             print("Review already complete. Use --reset to start over.")
             return 0
         state.final_done = False
-        state.final_interim_done = False
+        state.final_text = None
 
     remaining_docs = all_docs[state.doc_index:]
     rates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
-    estimated = estimate_review_cost(lib_path, remaining_docs, _REVIEW_WINDOW, system_prompt, rates)
+
+    segments_done = state.doc_index // DEFAULT_WINDOW
+    segments_total = (total + DEFAULT_WINDOW - 1) // DEFAULT_WINDOW
 
     if state.doc_index == 0:
-        print(f"{total} documents  •  model: {effective_model}")
+        print(f"{total} documents  •  {segments_total} segments  •  model: {effective_model}")
     else:
-        print(f"Resuming from doc {state.doc_index + 1} of {total}  •  model: {effective_model}")
-    if estimated is not None:
-        print(f"Estimated cost: {_format_total(estimated)}")
-    else:
-        print("Estimated cost: unknown (model not in pricing table)")
+        print(f"Resuming at segment {segments_done + 1} of {segments_total} (doc {state.doc_index + 1} of {total})  •  model: {effective_model}")
 
     if dry_run:
-        num_interims = 0 if no_write else len(remaining_docs) // _REVIEW_WINDOW
-        if not no_write and not state.final_interim_done:
-            num_interims += 1
-        num_calls = len(remaining_docs) + num_interims + (0 if (no_write or state.final_done) else 1)
-        print(f"Remaining docs: {len(remaining_docs)}  •  API calls: {num_calls}")
-        for doc in remaining_docs:
-            print(f"  {doc.name}")
-        return 0
-
-    try:
-        answer = input("Proceed? [y/N] ").strip().lower()
-    except EOFError:
-        answer = ""
-    if answer != "y":
-        print("Aborted.")
+        remaining_segments = (len(remaining_docs) + DEFAULT_WINDOW - 1) // DEFAULT_WINDOW
+        num_calls = remaining_segments + (0 if state.final_done else 1)
+        print(f"Remaining docs: {len(remaining_docs)}  •  segments: {remaining_segments}  •  API calls: {num_calls}")
+        for i in range(0, len(remaining_docs), DEFAULT_WINDOW):
+            seg = remaining_docs[i:i + DEFAULT_WINDOW]
+            print(f"\n  Segment {segments_done + i // DEFAULT_WINDOW + 1} ({len(seg)} docs):")
+            for doc in seg:
+                print(f"    {doc.name}")
         return 0
 
     client = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
@@ -1976,13 +1818,6 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
             + reply.cache_read_tokens * in_rate * 0.10 / 1_000_000
         )
 
-    def _call_doc(messages: list[dict]) -> object:
-        return client.generate_reply(
-            system_content, messages,
-            on_delta=_print_reply_delta,
-            reasoning_effort="none",
-        )
-
     def _call_synthesis(messages: list[dict]) -> object:
         return client.generate_reply(
             system_content, messages,
@@ -1990,89 +1825,83 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
             reasoning_effort="medium",
         )
 
-    def _append_output(header: str, text: str, assessment: bool = False, source: str | None = None) -> None:
+    def _write_output(header: str, text: str) -> None:
         if no_write:
             return
-        body = f"<!-- source: {source} -->\n\n{text}" if source else text
-        entry = f"\n# {header}\n\n{body}\n\n---\n"
+        entry = f"\n# {header}\n\n{text}\n\n---\n"
         with out_path.open("a", encoding="utf-8") as fh:
             fh.write(entry)
-        if assessment:
-            with assessments_path.open("a", encoding="utf-8") as fh:
-                fh.write(entry)
 
     def _record_cost(reply) -> None:
         cost = _calc_cost(reply)
         state.cumulative_cost += cost
         print(f"  {_format_cost(cost)}  (total {_format_total(state.cumulative_cost)})")
 
-    while state.doc_index < total:
-        doc_num = state.doc_index + 1
-        doc_path = all_docs[state.doc_index]
-        if state.numbered:
-            label = f"Doc {doc_num}: {doc_path.name}"
-            source_comment = None
-        else:
-            date = doc_path.name[:10] if len(doc_path.name) > 10 and doc_path.name[4] == "-" else ""
-            title = extract_doc_heading(doc_path)
-            label = f"{title} ({date})" if date else title
-            source_comment = doc_path.name
-        user_content = build_doc_content(doc_path, label)
-        messages = build_review_messages(state.interims[-1:], state.responses[-_REVIEW_WINDOW:], user_content)
+    # Process next segment.
+    processed_segment = False
+    if state.doc_index < total:
+        segment_docs = all_docs[state.doc_index:state.doc_index + DEFAULT_WINDOW]
+        n = state.doc_index // DEFAULT_WINDOW + 1
+        after_doc = state.doc_index + len(segment_docs)
+        print(f"\n>>> Segment {n} (docs {state.doc_index + 1}–{after_doc} of {total}) <<<\n")
 
-        print(f"\n{label}")
-        reply = _call_doc(messages)
-        print()
-        _record_cost(reply)
-
-        _append_output(label, reply.text, source=source_comment)
-        state.responses.append({"doc_num": doc_num, "filename": doc_path.name, "label": label, "text": reply.text})
-        if len(state.responses) > _REVIEW_WINDOW:
-            state.responses.pop(0)
-        state.doc_index += 1
-        save_review_state(state, state_path)
-
-        is_last = state.doc_index == total
-        is_interim_point = state.doc_index % _REVIEW_WINDOW == 0
-
-        if is_interim_point and not is_last and not no_write:
-            n = state.doc_index // _REVIEW_WINDOW
-            print(f"\n>>> Interim assessment {n} (after doc {state.doc_index}) <<<\n")
-            interim_user = [{"type": "text", "text": interim_prompt}]
-            messages = build_review_messages(state.interims, state.responses[-_REVIEW_WINDOW:], interim_user)
-            reply = _call_synthesis(messages)
-            print()
-            _record_cost(reply)
-            _append_output(f"Interim {n} (after doc {state.doc_index})", reply.text, assessment=True)
-            state.interims.append(reply.text)
-            save_review_state(state, state_path)
-
-    if not no_write and not state.final_interim_done and total > _REVIEW_WINDOW:
-        print(f"\n>>> Final interim assessment <<<\n")
-        final_interim_user = [{"type": "text", "text": final_interim_prompt}]
-        messages = build_review_messages(state.interims, state.responses[-_REVIEW_WINDOW:], final_interim_user)
+        messages = build_interim_messages(segment_docs, interim_prompt)
         reply = _call_synthesis(messages)
         print()
         _record_cost(reply)
-        _append_output(f"Final Interim (after doc {total})", reply.text, assessment=True)
-        state.interims.append(reply.text)
-        state.final_interim_done = True
+
+        interim_header = f"Segment {n} (docs {state.doc_index + 1}–{after_doc})"
+        _write_output(interim_header, reply.text)
+        state.interims.append({"header": interim_header, "text": reply.text, "after_doc": after_doc})
+        state.doc_index = after_doc
+        processed_segment = True
         save_review_state(state, state_path)
 
-    if not no_write and not state.final_done:
+    # Final assessment — only on a fresh run after all segments are complete.
+    if not state.final_done and state.doc_index >= total and not processed_segment and not no_write:
+        from mdc.library import load_entries
+
+        entries = load_entries(lib_path)
+        title_to_path = {e.title: lib_path / Path(e.rel_path) for e in entries}
+        known_titles = list(title_to_path.keys())
+
+        # Ask the model which documents it wants to read before the final assessment.
+        print(f"\n>>> Document selection <<<\n")
+        selection_messages = build_selection_messages(state.interims, known_titles)
+        selection_reply = _call_synthesis(selection_messages)
+        print()
+        _record_cost(selection_reply)
+
+        ranked_titles = parse_selected_titles(selection_reply.text, known_titles)[:30]
+        ranked_docs = [title_to_path[t] for t in ranked_titles if t in title_to_path and title_to_path[t].exists()]
+
+        # Compute token budget: 200k minus interims, system, final prompt, output buffer.
+        interim_tokens = sum(len(e["text"]) for e in state.interims) // 4
+        token_budget = 200_000 - interim_tokens - 500 - 4_000
+
         print(f"\n>>> Final assessment <<<\n")
-        final_user = [{"type": "text", "text": final_prompt_text}]
-        messages = build_review_messages(state.interims, state.responses[-_REVIEW_WINDOW:], final_user)
+        messages, included = build_final_messages(state.interims, final_prompt_text, ranked_docs, token_budget)
+        if included:
+            print(f"  Documents included ({len(included)} of {len(ranked_docs)} selected):")
+            for p in included:
+                print(f"    {p.name}")
+            print()
         reply = _call_synthesis(messages)
         print()
         _record_cost(reply)
-        _append_output("Final Assessment", reply.text, assessment=True)
+        _write_output("Final Assessment", reply.text)
+        state.final_text = reply.text
         state.final_done = True
         save_review_state(state, state_path)
         _prepend_toc(out_path)
-        _prepend_toc(assessments_path)
 
-    print(f"\nReview complete. Total cost: {_format_total(state.cumulative_cost)}.")
+    if state.doc_index < total:
+        remaining = total - state.doc_index
+        remaining_segs = (remaining + DEFAULT_WINDOW - 1) // DEFAULT_WINDOW
+        print(f"\nPaused. {remaining} docs remaining ({remaining_segs} segments). Run again to continue.")
+        print(f"Cumulative cost: {_format_total(state.cumulative_cost)}.")
+    else:
+        print(f"\nReview complete. Total cost: {_format_total(state.cumulative_cost)}.")
     if not no_write:
         print(f"Output: {out_path}")
     return 0
