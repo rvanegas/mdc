@@ -242,10 +242,25 @@ def build_doc_review_messages(doc_path: Path) -> list[dict]:
     ]}]
 
 
+def build_manifest_summaries(entries, exclude_titles: set[str]) -> str:
+    """Build a compact title+summary block for docs not covered by full reviews."""
+    from pathlib import Path as _Path
+    parts = []
+    for e in entries:
+        if e.title in exclude_titles or not e.summary:
+            continue
+        name = _Path(e.rel_path).name
+        date = name[:10] if len(name) > 10 and name[4] == "-" else ""
+        date_str = f" ({date})" if date else ""
+        parts.append(f'"{e.title}"{date_str}: {e.summary}')
+    return "\n\n".join(parts)
+
+
 def build_final_messages(
     interims: list[dict],
     final_prompt: str,
     selected_reviews: str | None = None,
+    manifest_summaries: str | None = None,
 ) -> list[dict]:
     """Build messages for the final assessment call."""
     block = "\n\n---\n\n".join(
@@ -254,6 +269,8 @@ def build_final_messages(
     content: list[dict] = [
         {"type": "text", "text": block, "cache_control": {"type": "ephemeral"}},
     ]
+    if manifest_summaries:
+        content.append({"type": "text", "text": manifest_summaries, "cache_control": {"type": "ephemeral"}})
     if selected_reviews:
         content.append({"type": "text", "text": selected_reviews})
     content.append({"type": "text", "text": final_prompt})

@@ -1700,8 +1700,9 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         DEFAULT_WINDOW,
         build_assessments_md,
         build_doc_review_messages,
-        build_interim_messages,
         build_final_messages,
+        build_interim_messages,
+        build_manifest_summaries,
         extract_doc_heading,
         extract_mentioned_titles,
         generate_include_list,
@@ -1879,10 +1880,25 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
             return 0
 
         titles = load_include_list(include_path)
+        unmatched = [t for t in titles if t not in title_to_path]
+        if unmatched:
+            print(f"\nWarning: {len(unmatched)} title(s) in {include_path.name} not found in library:")
+            for t in unmatched:
+                print(f"  - {t}")
+            print()
+
         mentioned_docs = [
             title_to_path[t] for t in titles
             if t in title_to_path and title_to_path[t].exists()
         ]
+        included_filenames = {d.name for d in mentioned_docs}
+
+        # Drop saved reviews no longer in the include list.
+        dropped = [r for r in state.doc_reviews if r["filename"] not in included_filenames]
+        if dropped:
+            print(f"Dropping {len(dropped)} saved review(s) no longer in include list.")
+            state.doc_reviews = [r for r in state.doc_reviews if r["filename"] in included_filenames]
+            save_review_state(state, state_path)
 
         cached = {r["filename"]: r for r in state.doc_reviews}
         remaining_docs = [d for d in mentioned_docs if d.name not in cached]
@@ -1916,8 +1932,13 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
             for d in mentioned_docs if d.name in cached
         ) if all_reviews else None
 
+        included_titles = set(titles)
+        manifest_summaries = build_manifest_summaries(entries, included_titles)
+        summary_count = len([e for e in entries if e.title not in included_titles and e.summary])
+        print(f"  Including summaries for {summary_count} additional documents.\n")
+
         print(f"\n>>> Final assessment <<<\n")
-        messages = build_final_messages(state.interims, final_prompt_text, selected_reviews)
+        messages = build_final_messages(state.interims, final_prompt_text, selected_reviews, manifest_summaries)
         reply = _call_synthesis(messages)
         print()
         _record_cost(reply)
