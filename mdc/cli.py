@@ -37,6 +37,7 @@ class _LibraryTermNotFoundError(Exception):
         self.terms = terms
 
 from mdc.assets import build_anthropic_input, build_chat_input, build_response_input, collect_local_assets
+from mdc.review import sanitize_for_pandoc
 from mdc.config import _default_assistant_name, load_config
 from mdc.form import check_file, check_global_issues, fix_object_replacement, fix_rtl_spans, fix_section_spacing, fix_title_section, slugify
 from mdc.transcript import (
@@ -1651,8 +1652,13 @@ def run_pdf(path: Path, quiet: bool = False) -> int:
     if _require_md(path):
         return 1
 
+    import tempfile
     output = path.with_suffix(".pdf")
-    base_cmd = ["pandoc", str(path), "-o", str(output),
+    sanitized = sanitize_for_pandoc(path.read_text(encoding="utf-8"))
+    with tempfile.NamedTemporaryFile(suffix=".md", mode="w", encoding="utf-8", delete=False) as tmp:
+        tmp.write(sanitized)
+        tmp_path = Path(tmp.name)
+    base_cmd = ["pandoc", str(tmp_path), "-o", str(output),
                 "-V", "geometry:margin=1in", "-V", "fontsize=11pt"]
     for engine in ("xelatex", None):
         cmd = base_cmd + ([f"--pdf-engine={engine}"] if engine else [])
@@ -1660,8 +1666,10 @@ def run_pdf(path: Path, quiet: bool = False) -> int:
         if result.returncode == 0:
             break
         if engine is None:
+            tmp_path.unlink(missing_ok=True)
             print(f"pandoc error:\n{result.stderr}", file=sys.stderr)
             return result.returncode
+    tmp_path.unlink(missing_ok=True)
 
     if not quiet:
         if shutil.which("open"):
@@ -1733,7 +1741,6 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         list_review_docs,
         load_prompt,
         load_review_state,
-        sanitize_for_pandoc,
         save_review_state,
     )
     from mdc.library import (
