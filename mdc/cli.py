@@ -1652,15 +1652,16 @@ def run_pdf(path: Path, quiet: bool = False) -> int:
         return 1
 
     output = path.with_suffix(".pdf")
-    result = subprocess.run(
-        ["pandoc", str(path), "-o", str(output),
-         "-V", "geometry:margin=1in", "-V", "fontsize=11pt"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        print(f"pandoc error:\n{result.stderr}", file=sys.stderr)
-        return result.returncode
+    base_cmd = ["pandoc", str(path), "-o", str(output),
+                "-V", "geometry:margin=1in", "-V", "fontsize=11pt"]
+    for engine in ("xelatex", None):
+        cmd = base_cmd + ([f"--pdf-engine={engine}"] if engine else [])
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            break
+        if engine is None:
+            print(f"pandoc error:\n{result.stderr}", file=sys.stderr)
+            return result.returncode
 
     if not quiet:
         if shutil.which("open"):
