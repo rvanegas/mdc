@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mdc"
-version = "0.1.21"
+version = "0.1.23"
 description = "Unified CLI for markdown chats with LLMs."
-readme = "README.md"
+readme = "mdc/README.md"
 requires-python = ">=3.11"
 dependencies = [
   "anthropic>=0.40.0",

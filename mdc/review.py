@@ -243,7 +243,8 @@ def _resolve_related_docs(doc_path: Path, title_to_path: dict[str, Path]) -> lis
         return []
     titles = _extract_related(content)
     result = []
-    for title in titles:
+    for raw in titles:
+        title = raw.strip("| *")
         p = title_to_path.get(title)
         if p and p != doc_path and p.exists():
             result.append(p)
@@ -337,22 +338,13 @@ def build_assessment_md(state: ReviewState) -> str:
     return sanitize_for_pandoc(f"# Final Assessment\n\n{state.final_text}\n")
 
 
+
 def build_reviews_md(state: ReviewState, entries) -> str:
-    """REVIEWS.md: final assessment followed by all ingredients."""
+    """REVIEWS.md: all review material in canonical order."""
     parts = [_TOC_BLOCK]
 
     if state.final_text:
         parts.append(f"\n# Final Assessment\n\n{state.final_text}\n\n---\n")
-
-    # Document summaries — exclude titles covered by individual reviews.
-    reviewed_titles: set[str] = set()
-    for r in state.doc_reviews:
-        label = r["label"]
-        if label.startswith('"'):
-            reviewed_titles.add(label.split('"')[1])
-    summary_text = build_manifest_summaries(entries, reviewed_titles)
-    if summary_text:
-        parts.append(f"\n# Document Summaries\n\n{summary_text}\n\n---\n")
 
     if state.interims:
         parts.append("\n# Segment Assessments\n")
@@ -363,6 +355,16 @@ def build_reviews_md(state: ReviewState, entries) -> str:
         parts.append("\n# Individual Reviews\n")
         for review in state.doc_reviews:
             parts.append(f"\n## {review['label']}\n\n{review['text']}\n\n---\n")
+
+    # Document summaries — exclude titles covered by individual reviews.
+    reviewed_titles: set[str] = set()
+    for r in state.doc_reviews:
+        label = r["label"]
+        if label.startswith('"'):
+            reviewed_titles.add(label.split('"')[1])
+    summary_text = build_manifest_summaries(entries, reviewed_titles)
+    if summary_text:
+        parts.append(f"\n# Document Summaries\n\n{summary_text}\n\n---\n")
 
     return sanitize_for_pandoc("".join(parts))
 

@@ -242,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "review":
             return run_review(
-                library_path=args.library_path,
+                library_path=args.lib,
                 reset=args.reset,
                 dry_run=args.dry_run,
                 since=args.since,
@@ -251,14 +251,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "index":
             return run_index(
-                library_path=args.library_path,
+                library_path=args.lib,
                 refs_only=args.refs_only_all,
                 reprocess_all=args.all,
                 verbose=args.verbose,
             )
         if args.command == "new":
             config = load_config()
-            return run_new(args.title, edit=args.edit, library_path=config.library_path)
+            lib = Path(args.lib).expanduser().resolve() if args.lib else config.library_path
+            return run_new(" ".join(args.title_words) or None, edit=args.edit, library_path=lib)
         if args.command == "check":
             if _require_bare(args.path):
                 return 1
@@ -275,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
                 if resolved is None:
                     return 1
                 paths.append(resolved)
-            return run_validate(paths, force_transcript=args.transcript)
+            return run_validate(paths, force_transcript=args.transcript, library_path=args.lib)
         if args.command == "fix":
             paths = []
             for p in args.paths:
@@ -305,13 +306,15 @@ def main(argv: list[str] | None = None) -> int:
                 terms=args.terms,
                 strict=args.strict,
                 web_search=args.web_search,
+                library_path=args.lib,
             )
         if args.command == "diff":
             extra = args.diff_args or []
             if extra and extra[0] == "--":
                 extra = extra[1:]
             config = load_config()
-            _rev_dir = (config.library_path / "REVISIONS") if config.library_path else None
+            lib_path = Path(args.lib).expanduser().resolve() if args.lib else config.library_path
+            _rev_dir = (lib_path / "REVISIONS") if lib_path else None
             if _require_bare(args.path):
                 return 1
             path = _resolve_path_abbrev(args.path, Path.cwd(), secondary_priority=("document", "chat", "argument"))
@@ -374,18 +377,18 @@ def build_parser() -> argparse.ArgumentParser:
         prog="mdc",
         description="Work with mdc-format markdown conversation files.",
     )
+    parser.add_argument(
+        "--lib",
+        default=None,
+        metavar="PATH",
+        help="Override the library_path from config for this invocation.",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     # review
     review_parser = subparsers.add_parser(
         "review",
         help="Run a staged AI review over an indexed document collection.",
-    )
-    review_parser.add_argument(
-        "library_path",
-        nargs="?",
-        default=None,
-        help="Path to library directory (overrides config file).",
     )
     review_parser.add_argument(
         "--reset",
@@ -418,17 +421,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rebuild REVIEW.md from saved state without making API calls.",
     )
 
+
     # relate
     # index
     index_parser = subparsers.add_parser(
         "index",
         help="Build or update the library document index using an AI model for summaries.",
-    )
-    index_parser.add_argument(
-        "library_path",
-        nargs="?",
-        default=None,
-        help="Path to library directory (overrides config file).",
     )
     index_parser.add_argument(
         "--all",
@@ -455,8 +453,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create a new mdc conversation file in the current directory.",
     )
     new_parser.add_argument(
-        "-t", "--title",
-        default=None,
+        "title_words",
+        nargs="*",
+        metavar="WORD",
         help="Title of the conversation.",
     )
     new_parser.add_argument(
@@ -1277,12 +1276,13 @@ def run_check(path: Path) -> int:
     return 0
 
 
-def run_validate(paths: list[Path], force_transcript: bool = False) -> int:
+def run_validate(paths: list[Path], force_transcript: bool = False, library_path: str | None = None) -> int:
     from mdc.library import is_library_transcript, resolve_title
     from mdc.review import list_review_docs
 
     config = load_config()
-    lib = config.library_path if config.library_path and config.library_path.is_dir() else None
+    raw_lib = Path(library_path).expanduser().resolve() if library_path else config.library_path
+    lib = raw_lib if raw_lib and raw_lib.is_dir() else None
     doc_order = {p.name: i for i, p in enumerate(list_review_docs(lib))} if lib else {}
 
     any_errors = False
@@ -1801,6 +1801,7 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
 
         return 0
 
+
     include_toc = True
     system_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "system.md", _DEFAULT_SYSTEM_PROMPT)
     interim_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "interim.md", _DEFAULT_INTERIM_PROMPT)
@@ -1836,6 +1837,19 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
             return 0
         state.final_done = False
         state.final_text = None
+
+    # If new documents have arrived and the last interim was partial, drop it and reprocess.
+    if state.interims and not since and total > state.doc_index:
+        last = state.interims[-1]
+        prev_end = state.interims[-2]["after_doc"] if len(state.interims) > 1 else 0
+        if last["after_doc"] - prev_end < DEFAULT_WINDOW:
+            state.interims.pop()
+            state.doc_index = prev_end
+            state.final_done = False
+            state.final_text = None
+            if not dry_run:
+                save_review_state(state, state_path)
+            print(f"Last segment was partial; rewinding to doc {prev_end + 1}.")
 
     remaining_docs = all_docs[state.doc_index:]
     rates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
@@ -1912,8 +1926,8 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         processed_segment = True
         save_review_state(state, state_path)
 
-    # Final assessment — only on a fresh run after all segments are complete.
-    if not state.final_done and state.doc_index >= total and not processed_segment and not no_write:
+    # Doc reviews + final assessment — only after all segments are complete.
+    if not state.final_done and state.doc_index >= total and not processed_segment:
         from mdc.library import load_entries
 
         entries = load_entries(lib_path)
@@ -1934,10 +1948,10 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         titles = load_include_list(include_path)
         unmatched = [t for t in titles if t not in title_to_path]
         if unmatched:
-            print(f"\nWarning: {len(unmatched)} title(s) in {include_path.name} not found in library:")
+            print(f"\nError: {len(unmatched)} title(s) in {include_path.name} not found in library:")
             for t in unmatched:
                 print(f"  - {t}")
-            print()
+            return 1
 
         mentioned_docs = [
             title_to_path[t] for t in titles
@@ -1978,6 +1992,10 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
             cached[doc_path.name] = entry
             save_review_state(state, state_path)
 
+        reviews_path = lib_path / REVIEWS_FILENAME
+        reviews_path.write_text(build_reviews_md(state, entries), encoding="utf-8")
+        print(f"Wrote {REVIEWS_FILENAME}.")
+
         all_reviews = [cached[d.name]["text"] for d in mentioned_docs if d.name in cached]
         selected_reviews = "\n\n---\n\n".join(
             f"{cached[d.name]['label']}:\n\n{cached[d.name]['text']}"
@@ -1989,15 +2007,15 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         summary_count = len([e for e in entries if e.title not in included_titles and e.summary])
         print(f"  Including summaries for {summary_count} additional documents.\n")
 
-        print(f"\n>>> Final assessment <<<\n")
-        messages = build_final_messages(state.interims, final_prompt_text, selected_reviews, manifest_summaries)
-        reply = _call_synthesis(messages)
-        print()
-        _record_cost(reply)
-        state.final_text = reply.text
-        state.final_done = True
-        save_review_state(state, state_path)
         if not no_write:
+            print(f"\n>>> Final assessment <<<\n")
+            messages = build_final_messages(state.interims, final_prompt_text, selected_reviews, manifest_summaries)
+            reply = _call_synthesis(messages)
+            print()
+            _record_cost(reply)
+            state.final_text = reply.text
+            state.final_done = True
+            save_review_state(state, state_path)
             out_path.write_text(build_assessments_md(state, include_toc=include_toc), encoding="utf-8")
 
     if state.doc_index < total:
@@ -2018,6 +2036,7 @@ def _run_reply_watch(
     reasoning_effort: str | None = None,
     verbose: bool = False,
     web_search: bool = False,
+    library_path: str | None = None,
 ) -> int:
     config = load_config()
     effective_model = model or config.model
@@ -2060,7 +2079,8 @@ def _run_reply_watch(
                 sys.stdout.write("\n")
             sys.stdout.flush()
 
-            _rev_dir = (config.library_path / "REVISIONS") if config.library_path else None
+            _lib = Path(library_path).expanduser().resolve() if library_path else config.library_path
+            _rev_dir = (_lib / "REVISIONS") if _lib else None
             _save_reply(path, text, reply_text, assistant_name, transcript.pending_turn.heading, revisions_dir=_rev_dir)
             if _rev_dir:
                 _prune_revisions(_rev_dir, config.revision_retention_days)
@@ -2081,6 +2101,7 @@ def run_reply(
     terms: list[str] | None = None,
     strict: bool = False,
     web_search: bool = False,
+    library_path: str | None = None,
 ) -> int:
     if _require_md(path):
         return 1
@@ -2091,7 +2112,7 @@ def run_reply(
         path = chat
 
     if watch:
-        return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort, verbose=verbose, web_search=web_search)
+        return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort, verbose=verbose, web_search=web_search, library_path=library_path)
 
     def status(msg: str) -> None:
         if verbose:
@@ -2128,6 +2149,7 @@ def run_reply(
                 terms=terms or [],
                 strict=strict,
                 web_search=web_search,
+                library_path=library_path,
             )
         except _LibraryTermNotFoundError as exc:
             missing = ", ".join(f'"{t}"' for t in exc.terms)
@@ -2151,7 +2173,8 @@ def run_reply(
         sys.stdout.write("\n")
     sys.stdout.flush()
     status("Appending to transcript...")
-    _rev_dir = (config.library_path / "REVISIONS") if config.library_path else None
+    _lib = Path(library_path).expanduser().resolve() if library_path else config.library_path
+    _rev_dir = (_lib / "REVISIONS") if _lib else None
     _save_reply(path, text, reply_text, assistant_name, transcript.pending_turn.heading, revisions_dir=_rev_dir)
     if _rev_dir:
         _prune_revisions(_rev_dir, config.revision_retention_days)
@@ -2172,6 +2195,7 @@ def _reply_anthropic(
     terms: list[str] | None = None,
     strict: bool = False,
     web_search: bool = False,
+    library_path: str | None = None,
 ) -> str:
     from mdc.anthropic_client import AnthropicChatClient
     from mdc.library import LIBRARY_TOOLS, _get_summary, lookup_term, read_document, resolve_title
@@ -2181,9 +2205,10 @@ def _reply_anthropic(
     library_context = None
 
     if library:
-        if not config.library_path or not config.library_path.is_dir():
-            raise ValueError("--library requires library_path to be set in config.")
-        lib = config.library_path
+        _raw_lib = Path(library_path).expanduser().resolve() if library_path else config.library_path
+        if not _raw_lib or not _raw_lib.is_dir():
+            raise ValueError("--library requires library_path to be set in config or via --lib.")
+        lib = _raw_lib
         tools = LIBRARY_TOOLS
 
         try:
@@ -2219,7 +2244,7 @@ def _reply_anthropic(
             "Only include a Personal Library document in your reply if you have called read_document on it. "
             "List Personal Library documents under '## Related' using the format '| *Exact Title*' "
             "(the section implies the source; no date, author, or other annotation). "
-            "List all other referenced works under '## References'. "
+            "List any newly cited works under '## References' — additions only; do not repeat works already in the accumulated references. "
             "Do not insert a horizontal rule before these sections."
         )
         library_context = library_tools_prompt

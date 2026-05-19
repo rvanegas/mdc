@@ -73,6 +73,14 @@ ollama_base_url = "http://localhost:11434/v1"
 
 Run `mdc config` to print the resolved paths for config, system prompt, state, and cache directories.
 
+## Global flags
+
+| Flag | Description |
+|------|-------------|
+| `--lib PATH` | Override `library_path` from config for a single invocation. Accepted before any subcommand: `mdc --lib ~/alt-notes index`. |
+
+---
+
 ## Commands
 
 ### `mdc new`
@@ -242,14 +250,13 @@ State is cached; only changed documents are re-indexed on subsequent runs.
 
 ```bash
 mdc index                        # use library_path from config
-mdc index ~/notes                # explicit path
+mdc --lib ~/notes index          # explicit path
 mdc index --all                  # reindex everything from scratch
 mdc index --refs-only-all        # extract references only, no AI calls
 ```
 
 | Flag | Description |
 |------|-------------|
-| `library_path` | Optional path to the library directory. Overrides config. |
 | `--all` | Reindex all documents and rebuild all semantic relations from scratch. |
 | `--refs-only-all` | Extract references from all documents without making any AI calls. |
 
@@ -284,6 +291,52 @@ epistemology
 - **Alias** — canonical term on a bare line; aliases as `- alias` bullets beneath it.
 - **Exclude** — suppress these terms from the index entirely.
 - **Group** — subterms appear nested under the parent in `INDEX.md`.
+
+---
+
+### `mdc review`
+
+Run a staged AI review over an indexed document collection. Works in segments: each run processes one segment of documents, writes an interim assessment, and saves state so subsequent runs can resume. After all segments are done, it generates per-document reviews of the most-mentioned works and a final assessment.
+
+Output files written to the library directory:
+
+- **`REVIEW.md`** — full review: interim assessments and final synthesis.
+- **`ASSESSMENT.md`** — final assessment only (extracted for quick reference).
+- **`REVIEWS.md`** — individual per-document reviews only.
+- **`ASSESSMENT.pdf`** / **`REVIEWS.pdf`** — PDF versions of the above (requires pandoc).
+
+```bash
+mdc review                              # use library_path from config
+mdc --lib ~/notes review                # explicit path
+mdc review --dry-run                    # show what would run without making API calls
+mdc review --reset                      # discard saved state and start over
+mdc review --since 2025-03-01-title.md  # re-review from this document onward
+mdc review --rebuild                    # regenerate output files from saved state, no API calls
+```
+
+The review pauses between the segment pass and the final assessment to let you edit `REVIEW_INCLUDE.md`, which controls which documents receive individual reviews in the final pass.
+
+| Flag | Description |
+|------|-------------|
+| `--reset` | Discard saved state and output files; start from scratch. |
+| `--since DOC` | Re-review from the named document onward, rewinding state to the nearest segment boundary. |
+| `--dry-run` | Show segments and document counts without making any API calls. |
+| `--no-assessment` | Print doc reviews and save state but skip assessments; do not write output files. |
+| `--rebuild` | Rebuild all output files from saved state without making API calls. |
+
+#### REVIEW_INCLUDE.md
+
+After all segments finish, mdc writes `REVIEW_INCLUDE.md` to the library directory containing the document titles extracted from the interim assessments. Edit this file to add or remove titles, then run `mdc review` again to proceed with the final per-document review pass.
+
+#### Custom prompts
+
+Place Markdown files in `~/.config/mdc/review-prompts/` to override the built-in prompts:
+
+| File | Overrides |
+|------|-----------|
+| `system.md` | System prompt for all review calls |
+| `interim.md` | Prompt for segment assessments |
+| `final.md` | Prompt for the final synthesis |
 
 ---
 
@@ -352,6 +405,7 @@ Key bindings (active in `mdc-mode`):
 | `C-c C-k` | `mdc check` |
 | `C-c C-v` | `mdc validate` |
 | `C-c C-n` | New transcript |
+| `C-c C-e` | Jump to the input section (last human turn) |
 | `M-n` / `M-p` | Next / previous turn |
 
 ### Sublime Text

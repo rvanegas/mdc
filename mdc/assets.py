@@ -66,7 +66,7 @@ def build_response_input(
     assets_by_turn = collect_local_assets(transcript, transcript_path)
     messages: list[dict[str, object]] = [{"role": "system", "content": system_prompt}]
     if transcript.references:
-        messages.append({"role": "system", "content": "Accumulated references:\n" + "\n".join(transcript.references)})
+        messages.append({"role": "system", "content": "Accumulated references (do not repeat these in your reply — only return new references not already listed here):\n" + "\n".join(transcript.references)})
 
     for index, turn in enumerate(transcript.turns):
         role = "assistant" if turn.is_assistant else "user"
@@ -201,7 +201,7 @@ def build_anthropic_input(
         {"type": "text", "text": system_prompt}
     ]
     if transcript.references:
-        system_blocks.append({"type": "text", "text": "Accumulated references:\n" + "\n".join(transcript.references)})
+        system_blocks.append({"type": "text", "text": "Accumulated references (do not repeat these in your reply — only return new references not already listed here):\n" + "\n".join(transcript.references)})
     if library_context:
         system_blocks.append({"type": "text", "text": library_context})
     system_blocks[-1]["cache_control"] = _CACHE_CONTROL
@@ -240,7 +240,7 @@ def build_chat_input(
     assets_by_turn = collect_local_assets(transcript, transcript_path)
     messages: list[dict[str, object]] = [{"role": "system", "content": system_prompt}]
     if transcript.references:
-        messages.append({"role": "system", "content": "Accumulated references:\n" + "\n".join(transcript.references)})
+        messages.append({"role": "system", "content": "Accumulated references (do not repeat these in your reply — only return new references not already listed here):\n" + "\n".join(transcript.references)})
 
     for index, turn in enumerate(transcript.turns):
         role = "assistant" if turn.is_assistant else "user"
