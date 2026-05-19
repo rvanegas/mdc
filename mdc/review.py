@@ -234,7 +234,26 @@ def _doc_review_word_limit(word_count: int) -> int:
     return 800
 
 
-def build_doc_review_messages(doc_path: Path) -> list[dict]:
+def _resolve_related_docs(doc_path: Path, title_to_path: dict[str, Path]) -> list[Path]:
+    """Return paths for Related-section titles that exist in the library."""
+    from mdc.library import _extract_related
+    try:
+        content = doc_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    titles = _extract_related(content)
+    result = []
+    for title in titles:
+        p = title_to_path.get(title)
+        if p and p != doc_path and p.exists():
+            result.append(p)
+    return result
+
+
+def build_doc_review_messages(
+    doc_path: Path,
+    title_to_path: dict[str, Path] | None = None,
+) -> list[dict]:
     """Build messages for a single-document review call (for final context)."""
     date = doc_path.name[:10] if len(doc_path.name) > 10 and doc_path.name[4] == "-" else ""
     title = extract_doc_heading(doc_path)
@@ -242,15 +261,28 @@ def build_doc_review_messages(doc_path: Path) -> list[dict]:
     text = doc_path.read_text(encoding="utf-8")
     word_count = len(text.split())
     word_limit = _doc_review_word_limit(word_count)
-    prompt = (
-        f"Write a {word_limit}-word assessment of this document. "
-        "What does it contribute to the collection's main intellectual threads? "
-        "Be specific and assessorial."
+
+    related_docs = _resolve_related_docs(doc_path, title_to_path or {})
+
+    content: list[dict] = []
+    if related_docs:
+        related_text = build_segment_content(related_docs)
+        content.append({"type": "text", "text": f"Related documents:\n\n{related_text}", "cache_control": {"type": "ephemeral"}})
+
+    content.append({"type": "text", "text": f"Document: {label}\n\n{text}"})
+
+    related_clause = (
+        " Where relevant, draw on the related documents provided for context."
+        if related_docs else ""
     )
-    return [{"role": "user", "content": [
-        {"type": "text", "text": f"Document: {label}\n\n{text}"},
-        {"type": "text", "text": prompt},
-    ]}]
+    prompt = (
+        f"Write a {word_limit}-word assessment of this document."
+        " What is it about? What are its central claims, arguments, or concerns?"
+        " Be specific and assessorial." + related_clause
+    )
+    content.append({"type": "text", "text": prompt})
+
+    return [{"role": "user", "content": content}]
 
 
 def build_manifest_summaries(entries, exclude_titles: set[str]) -> str:

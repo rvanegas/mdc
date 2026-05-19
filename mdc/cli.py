@@ -1967,7 +1967,7 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
             print(f"\n[{len(cached) + 1}/{len(mentioned_docs)}] {label}")
             review_reply = client.generate_reply(
                 system_content,
-                build_doc_review_messages(doc_path),
+                build_doc_review_messages(doc_path, title_to_path),
                 on_delta=_print_reply_delta,
                 reasoning_effort="none",
             )
