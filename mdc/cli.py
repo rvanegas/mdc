@@ -246,8 +246,12 @@ def main(argv: list[str] | None = None) -> int:
                 reset=args.reset,
                 dry_run=args.dry_run,
                 since=args.since,
-                no_write=args.no_assessment,
+                only_docs=args.only_docs,
                 rebuild=args.rebuild,
+                theme=args.theme,
+                selection=args.selection,
+                docs=args.docs,
+                evaluate=args.evaluate,
             )
         if args.command == "index":
             return run_index(
@@ -409,10 +413,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show what would be reviewed without making API calls.",
     )
     review_parser.add_argument(
-        "--no-assessment",
+        "--only-docs",
         action="store_true",
         default=False,
-        help="Print doc reviews and save state to JSON but skip interim/final assessments and do not write REVIEW files.",
+        help="Run only individual doc reviews; skip all interim segment assessments and the final assessment.",
     )
     review_parser.add_argument(
         "--rebuild",
@@ -420,7 +424,30 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Rebuild REVIEW.md from saved state without making API calls.",
     )
-
+    review_parser.add_argument(
+        "--theme",
+        default=None,
+        metavar="NAME",
+        help="Work with a themed review (uses THEME-{name}.md in the library directory).",
+    )
+    review_parser.add_argument(
+        "--selection",
+        action="store_true",
+        default=False,
+        help="Score and select documents for the theme; write ## Auto-Included into the theme file.",
+    )
+    review_parser.add_argument(
+        "--docs",
+        action="store_true",
+        default=False,
+        help="Run individual doc reviews for all selected theme documents that lack one.",
+    )
+    review_parser.add_argument(
+        "--evaluate",
+        action="store_true",
+        default=False,
+        help="Estimate token budget for the theme selection, then prompt to run the review.",
+    )
 
     # relate
     # index
@@ -649,8 +676,12 @@ def run_config() -> int:
     return 0
 
 
+def get_editor() -> str | None:
+    return os.environ.get("MDC_EDITOR") or os.environ.get("EDITOR")
+
+
 def run_edit(paths: list[Path]) -> int:
-    editor_cmd = os.environ.get("EDITOR")
+    editor_cmd = get_editor()
     if not editor_cmd:
         for p in paths:
             print(str(p))
@@ -1242,9 +1273,7 @@ def run_new(title: str | None, edit: bool = False, library_path: Path | None = N
         )
         print(document_filename)
         print(chat_filename)
-        editor_cmd = os.environ.get("EDITOR")
-        if editor_cmd:
-            subprocess.run([editor_cmd, chat_filename, document_filename])
+        paths = [chat_filename, document_filename]
     else:
         filename = f"{today}-{slug}.md"
         path = Path(filename)
@@ -1253,9 +1282,10 @@ def run_new(title: str | None, edit: bool = False, library_path: Path | None = N
             return 1
         path.write_text(f"\n# {title}\n{today}\n\n## Prompt\n\n", encoding="utf-8")
         print(filename)
-        editor_cmd = os.environ.get("EDITOR")
-        if editor_cmd:
-            subprocess.run([editor_cmd, filename])
+        paths = [filename]
+    editor_cmd = get_editor()
+    if editor_cmd:
+        subprocess.run([editor_cmd, *paths])
     return 0
 
 
@@ -1679,8 +1709,6 @@ def run_pdf(path: Path, quiet: bool = False) -> int:
     return 0
 
 
-_REVIEW_WINDOW = 40
-
 
 _TOC_BLOCK = """\
 ```{=latex}
@@ -1717,16 +1745,20 @@ def _render_review_pdfs(*md_paths: Path) -> None:
                     print(f"pandoc error on {md_path.name}: {e.stderr.decode()[:300]}")
 
 
-def run_review(library_path: str | None, reset: bool, dry_run: bool = False, since: str | None = None, no_write: bool = False, rebuild: bool = False) -> int:
+def run_review(library_path: str | None, reset: bool, dry_run: bool = False, since: str | None = None, only_docs: bool = False, rebuild: bool = False, theme: str | None = None, selection: bool = False, docs: bool = False, evaluate: bool = False) -> int:
     import hashlib
     from mdc.config import _state_dir
     from mdc.anthropic_client import AnthropicChatClient
     from mdc.review import (
+        _DEFAULT_DOC_REVIEW_SYSTEM_PROMPT,
         _DEFAULT_FINAL_PROMPT,
         _DEFAULT_INTERIM_PROMPT,
         _DEFAULT_SYSTEM_PROMPT,
+        _DEFAULT_THEMED_FINAL_PROMPT,
+        _DEFAULT_THEMED_INTERIM_PROMPT,
         _REVIEW_PROMPTS_DIR,
-        DEFAULT_WINDOW,
+        all_segments,
+        estimate_review_cost,
         build_assessment_md,
         build_assessments_md,
         build_doc_review_messages,
@@ -1734,14 +1766,25 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         build_interim_messages,
         build_manifest_summaries,
         build_reviews_md,
+        _resolve_related_docs,
         extract_doc_heading,
         extract_mentioned_titles,
         generate_include_list,
+        load_doc_word_counts,
         load_include_list,
         list_review_docs,
         load_prompt,
         load_review_state,
+        next_segment,
+        build_themed_synthesis_messages,
+        _DEFAULT_THEMED_SYNTHESIS_PROMPT,
+        _demote_headings,
+        generate_theme_template,
+        parse_theme_file,
         save_review_state,
+        SEGMENT_TOKEN_LIMIT,
+        select_docs_by_theme,
+        write_theme_selection,
     )
     from mdc.library import (
         ASSESSMENT_FILENAME,
@@ -1769,8 +1812,278 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         return 1
 
     path_hash = hashlib.sha256(str(lib_path).encode()).hexdigest()[:8]
+
+    # Theme setup
+    theme_slug: str | None = None
+    theme_terms: list[str] = []
+    theme_include_titles: list[str] = []
+    theme_exclude_titles: list[str] = []
+    theme_selection_titles: list[str] = []
+    if theme:
+        theme_slug = theme
+        theme_path = lib_path / f"THEME-{theme_slug}.md"
+
+        # Bare command: create template if missing, otherwise print status.
+        if not selection and not docs and not evaluate and not reset and not rebuild and not only_docs:
+            if not theme_path.exists():
+                theme_path.write_text(generate_theme_template(theme_slug), encoding="utf-8")
+                print(f"Created {theme_path.name}. Edit the ## Terms section, then run:")
+                print(f"  mdc review --theme {theme_slug} --selection")
+            else:
+                t, inc, _, sel = parse_theme_file(theme_path)
+                print(f"{theme_path.name}: {len(t)} term(s), {len(inc)} included, {len(sel)} auto-included.")
+                if not sel and not inc:
+                    print(f"  Next: mdc review --theme {theme_slug} --selection")
+                else:
+                    print(f"  Next: mdc review --theme {theme_slug} --docs")
+            return 0
+
+        if not theme_path.exists():
+            print(f"Error: {theme_path.name} not found. Run 'mdc review --theme {theme_slug}' to create it.")
+            return 1
+
+        theme_terms, theme_include_titles, theme_exclude_titles, theme_selection_titles = parse_theme_file(theme_path)
+
+        if since:
+            print("Error: --since is not supported for themed reviews.")
+            return 1
+
+        # Load global review state (needed for both --selection and --evaluate).
+        global_state_path = _state_dir / f"review-{path_hash}.json"
+        global_state = load_review_state(global_state_path)
+        review_by_filename = {r["filename"]: r for r in global_state.doc_reviews}
+
+        # --selection: score docs, pack by review length, write ## Auto-Included.
+        if selection:
+            all_scored, scores, related_keys = select_docs_by_theme(
+                lib_path, theme_terms, theme_include_titles, theme_exclude_titles,
+            )
+            if not all_scored:
+                print("No documents matched. Check that 'mdc index' has been run and the terms exist in INDEX.md.")
+                return 1
+            from mdc.library import load_entries
+            entries = load_entries(lib_path)
+            title_map = {e.rel_path: e.title for e in entries}
+
+            print(f"Theme: {theme_slug}")
+            print(f"Terms: {', '.join(theme_terms)}")
+            if related_keys:
+                print(f"Related (1-hop): {', '.join(related_keys)}")
+            print()
+
+            TOKEN_LIMIT = SEGMENT_TOKEN_LIMIT
+            force_include_set = set(theme_include_titles)
+            title_to_rel = {e.title: e.rel_path for e in entries}
+            auto_titles: list[str] = []
+
+            include_tokens = 0.0
+            for title in theme_include_titles:
+                rel = title_to_rel.get(title)
+                if rel:
+                    r = review_by_filename.get(Path(rel).name)
+                    if r:
+                        include_tokens += len(r["text"]) / 4
+
+            auto_tokens = 0.0
+            for doc in all_scored:
+                rel = doc.relative_to(lib_path).as_posix()
+                title = title_map.get(rel) or extract_doc_heading(doc)
+                if title in force_include_set:
+                    continue  # already listed in ## Include
+                review = review_by_filename.get(doc.name)
+                review_tokens = len(review["text"]) / 4 if review else 0
+                if review and auto_titles and include_tokens + auto_tokens + review_tokens > TOKEN_LIMIT:
+                    break
+                score = scores.get(rel, 0)
+                has_review = "✓" if review else "–"
+                auto_titles.append(title)
+                auto_tokens += review_tokens
+                print(f"  [{has_review}] [score {score}] {title}")
+
+            total_tokens = include_tokens + auto_tokens
+            unreviewed_count = sum(
+                1 for t in auto_titles
+                if t in title_to_rel and not review_by_filename.get(Path(title_to_rel[t]).name)
+            )
+            review_note = f"  ({unreviewed_count} not yet reviewed)" if unreviewed_count else ""
+            print(f"\nIncluded: {len(theme_include_titles)}  •  Auto-included: {len(auto_titles)}{review_note}  •  ~{total_tokens / 1000:.0f}k tokens")
+            write_theme_selection(theme_path, auto_titles, total_tokens * 4)
+            print(f"Written to {theme_path.name}. Edit ## Auto-Included if needed, then run:")
+            print(f"  mdc review --theme {theme_slug} --evaluate")
+            return 0
+
+        # --docs: run individual doc reviews for all selected docs that lack one.
+        if docs:
+            all_doc_titles = list(dict.fromkeys(theme_include_titles + theme_selection_titles))
+            if not all_doc_titles:
+                print(f"No documents selected. Run --selection first.")
+                return 1
+            from mdc.library import load_entries as _le2
+            _entries2 = _le2(lib_path)
+            _title_to_path2 = {e.title: lib_path / Path(e.rel_path) for e in _entries2}
+            unmatched = [t for t in all_doc_titles if t not in _title_to_path2]
+            if unmatched:
+                print(f"Warning: {len(unmatched)} title(s) not found in library — skipping.")
+            def _themed_needs_review(doc_path: Path) -> bool:
+                entry = review_by_filename.get(doc_path.name)
+                if entry is None:
+                    return True
+                reviewed_at = entry.get("reviewed_at")
+                if not reviewed_at:
+                    return False
+                mtime = datetime.datetime.fromtimestamp(doc_path.stat().st_mtime, tz=datetime.timezone.utc)
+                return mtime > datetime.datetime.fromisoformat(reviewed_at)
+
+            pending = [
+                _title_to_path2[t] for t in all_doc_titles
+                if t in _title_to_path2 and _themed_needs_review(_title_to_path2[t])
+            ]
+            if not pending:
+                print(f"All {len(all_doc_titles)} selected documents already have up-to-date reviews.")
+                print(f"  Next: mdc review --theme {theme_slug} --evaluate")
+                return 0
+            stale = sum(1 for t in all_doc_titles if t in _title_to_path2 and review_by_filename.get(_title_to_path2[t].name) and _themed_needs_review(_title_to_path2[t]))
+            new_count = len(pending) - stale
+            parts = []
+            if new_count:
+                parts.append(f"{new_count} new")
+            if stale:
+                parts.append(f"{stale} updated since last review")
+            print(f"{len(pending)} of {len(all_doc_titles)} document(s) need reviews ({', '.join(parts)}).")
+            doc_review_system_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "doc-system.md", _DEFAULT_DOC_REVIEW_SYSTEM_PROMPT)
+            client = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
+            rates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
+            cumulative_cost = 0.0
+            title_to_path_all = {e.title: lib_path / Path(e.rel_path) for e in _entries2}
+            cached = dict(review_by_filename)
+            for i, doc_path in enumerate(pending, 1):
+                title = extract_doc_heading(doc_path)
+                date = doc_path.name[:10] if len(doc_path.name) > 10 and doc_path.name[4] == "-" else ""
+                label = f'"{title}" ({date})' if date else f'"{title}"'
+                print(f"\n[{i}/{len(pending)}] {label}")
+                review_reply = client.generate_reply(
+                    [{"type": "text", "text": doc_review_system_prompt, "cache_control": {"type": "ephemeral"}}],
+                    build_doc_review_messages(doc_path, title_to_path_all,
+                                              reviews={k: v["text"] for k, v in cached.items()}),
+                    on_delta=_print_reply_delta,
+                    reasoning_effort="none",
+                )
+                print()
+                if rates:
+                    in_rate, out_rate = rates
+                    cost = (
+                        review_reply.input_tokens * in_rate / 1_000_000
+                        + review_reply.output_tokens * out_rate / 1_000_000
+                        + review_reply.cache_creation_tokens * in_rate * 1.25 / 1_000_000
+                        + review_reply.cache_read_tokens * in_rate * 0.10 / 1_000_000
+                    )
+                    cumulative_cost += cost
+                    print(f"  {_format_cost(cost)}  (total {_format_total(cumulative_cost)})")
+                entry = {
+                    "filename": doc_path.name,
+                    "label": label,
+                    "text": review_reply.text,
+                    "reviewed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                }
+                existing_idx = next((i for i, r in enumerate(global_state.doc_reviews) if r["filename"] == doc_path.name), None)
+                if existing_idx is not None:
+                    global_state.doc_reviews[existing_idx] = entry
+                else:
+                    global_state.doc_reviews.append(entry)
+                cached[doc_path.name] = entry
+                save_review_state(global_state, global_state_path)
+            print(f"\nReviews complete. Run:")
+            print(f"  mdc review --theme {theme_slug} --evaluate")
+            return 0
+
+        # --evaluate: synthesize from reviews for ## Include + ## Auto-Included titles.
+        if evaluate:
+            if not theme_selection_titles and not theme_include_titles:
+                print(f"No ## Auto-Included in {theme_path.name}. Run --selection first.")
+                return 1
+            from mdc.library import load_entries as _le
+            _entries = _le(lib_path)
+            _title_to_path = {e.title: lib_path / e.rel_path for e in _entries}
+
+            all_evaluate_titles = list(dict.fromkeys(theme_include_titles + theme_selection_titles))
+            selected_reviews: list[dict] = []
+            missing_reviews: list[str] = []
+            for title in all_evaluate_titles:
+                p = _title_to_path.get(title)
+                if not p:
+                    print(f"Warning: '{title}' not found in library — skipping.")
+                    continue
+                review = review_by_filename.get(p.name)
+                if not review:
+                    missing_reviews.append(title)
+                    continue
+                selected_reviews.append(review)
+
+            if missing_reviews:
+                print(f"Note: {len(missing_reviews)} document(s) not yet reviewed (will be omitted from synthesis):")
+                for t in missing_reviews[:5]:
+                    print(f"  - {t}")
+                if len(missing_reviews) > 5:
+                    print(f"  ... and {len(missing_reviews) - 5} more")
+                print(f"  Run 'mdc review --only-docs' to generate missing reviews.")
+
+            if not selected_reviews:
+                print("No reviews available yet. Run 'mdc review --only-docs' first.")
+                return 1
+
+            total_review_tokens = sum(len(r["text"]) / 4 for r in selected_reviews)
+            rates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
+            print(f"\nTheme: {theme_slug}")
+            print(f"Reviews: {len(selected_reviews)} documents  •  ~{total_review_tokens / 1000:.0f}k tokens")
+            if rates:
+                in_rate, out_rate = rates
+                cost_est = total_review_tokens * in_rate / 1_000_000 + 1500 * out_rate / 1_000_000
+                print(f"Cost estimate: ~${cost_est:.2f}")
+
+            answer = input("\nProceed? [y/N] ").strip().lower()
+            if answer != "y":
+                return 0
+
+            synthesis_prompt = load_prompt(
+                _REVIEW_PROMPTS_DIR / f"synthesis-theme.md", _DEFAULT_THEMED_SYNTHESIS_PROMPT
+            )
+            system_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "system.md", _DEFAULT_SYSTEM_PROMPT)
+            client = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
+            system_content = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+
+            print(f"\n>>> Thematic synthesis: {theme_slug} ({len(selected_reviews)} reviews) <<<\n")
+            messages = build_themed_synthesis_messages(selected_reviews, synthesis_prompt)
+            reply = client.generate_reply(system_content, messages, on_delta=_print_reply_delta, reasoning_effort="medium")
+            print()
+
+            if rates:
+                in_rate, out_rate = rates
+                cost = (
+                    reply.input_tokens * in_rate / 1_000_000
+                    + reply.output_tokens * out_rate / 1_000_000
+                    + reply.cache_creation_tokens * in_rate * 1.25 / 1_000_000
+                    + reply.cache_read_tokens * in_rate * 0.10 / 1_000_000
+                )
+                print(f"  {_format_cost(cost)}")
+
+            assessment_filename = f"ASSESSMENT-{theme_slug}.md"
+            assessment_path = lib_path / assessment_filename
+            assessment_path.write_text(
+                sanitize_for_pandoc(f"# Assessment: {theme_slug.replace('-', ' ').title()}\n\n{_demote_headings(reply.text)}\n"),
+                encoding="utf-8",
+            )
+            print(f"Wrote {assessment_filename}.")
+            _render_review_pdfs(assessment_path)
+            return 0
+
+        # No --selection or --evaluate: shouldn't reach here.
+        print(f"Use --selection to generate a document list, or --evaluate to run the review.")
+        return 0
+
     state_path = _state_dir / f"review-{path_hash}.json"
     out_path = lib_path / REVIEW_FILENAME
+    _assessment_filename = ASSESSMENT_FILENAME
+    _reviews_filename = REVIEWS_FILENAME
 
     if reset:
         state_path.unlink(missing_ok=True)
@@ -1789,13 +2102,13 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
             from mdc.library import load_entries
             entries = load_entries(lib_path)
 
-            assessment_path = lib_path / ASSESSMENT_FILENAME
+            assessment_path = lib_path / _assessment_filename
             assessment_path.write_text(build_assessment_md(state), encoding="utf-8")
-            print(f"Wrote {ASSESSMENT_FILENAME}.")
+            print(f"Wrote {_assessment_filename}.")
 
-            reviews_path = lib_path / REVIEWS_FILENAME
+            reviews_path = lib_path / _reviews_filename
             reviews_path.write_text(build_reviews_md(state, entries), encoding="utf-8")
-            print(f"Wrote {REVIEWS_FILENAME} ({len(state.doc_reviews)} individual reviews).")
+            print(f"Wrote {_reviews_filename} ({len(state.doc_reviews)} individual reviews).")
 
             _render_review_pdfs(assessment_path, reviews_path)
 
@@ -1804,15 +2117,23 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
 
     include_toc = True
     system_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "system.md", _DEFAULT_SYSTEM_PROMPT)
-    interim_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "interim.md", _DEFAULT_INTERIM_PROMPT)
-    final_prompt_text = load_prompt(_REVIEW_PROMPTS_DIR / "final.md", _DEFAULT_FINAL_PROMPT)
+    doc_review_system_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "doc-system.md", _DEFAULT_DOC_REVIEW_SYSTEM_PROMPT)
+    if theme_slug:
+        interim_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "interim-theme.md", _DEFAULT_THEMED_INTERIM_PROMPT)
+        final_prompt_text = load_prompt(_REVIEW_PROMPTS_DIR / "final-theme.md", _DEFAULT_THEMED_FINAL_PROMPT)
+    else:
+        interim_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "interim.md", _DEFAULT_INTERIM_PROMPT)
+        final_prompt_text = load_prompt(_REVIEW_PROMPTS_DIR / "final.md", _DEFAULT_FINAL_PROMPT)
 
+    word_counts = load_doc_word_counts(lib_path)
     all_docs = list_review_docs(lib_path)
     if not all_docs:
         print("No indexed documents found. Run 'mdc index' first.")
         return 1
 
     total = len(all_docs)
+    segments = all_segments(all_docs, word_counts)
+    segments_total = len(segments)
 
     if since:
         since_name = Path(since).name
@@ -1820,42 +2141,44 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         if start_pos is None:
             print(f"Error: '{since_name}' not found in indexed documents.")
             return 1
-        # Rewind to the segment boundary at or before start_pos.
-        segment_start = (start_pos // DEFAULT_WINDOW) * DEFAULT_WINDOW
-        state.interims = [e for e in state.interims if e["after_doc"] <= segment_start]
-        state.doc_index = segment_start
-        state.final_done = False
-        state.final_text = None
-        if not dry_run:
-            out_path.write_text(build_assessments_md(state), encoding="utf-8")
-            save_review_state(state, state_path)
-        print(f"State rewound to segment starting at doc {segment_start + 1}.")
+        # Drop cached doc reviews for documents at or after start_pos.
+        since_filenames = {d.name for d in all_docs[start_pos:]}
+        before = len(state.doc_reviews)
+        state.doc_reviews = [r for r in state.doc_reviews if r["filename"] not in since_filenames]
+        dropped_reviews = before - len(state.doc_reviews)
 
-    if state.final_done:
+        if total <= state.doc_index:
+            state.final_done = False
+            state.final_text = None
+            if not dry_run:
+                save_review_state(state, state_path)
+            msg = "No new documents; re-running individual reviews and final assessment."
+            if dropped_reviews:
+                msg += f" Dropped {dropped_reviews} cached doc review(s)."
+            print(msg)
+        else:
+            # Rewind to the segment boundary at or before start_pos.
+            valid_interims = [e for e in state.interims if e["after_doc"] <= start_pos]
+            segment_start = valid_interims[-1]["after_doc"] if valid_interims else 0
+            state.interims = valid_interims
+            state.doc_index = segment_start
+            state.final_done = False
+            state.final_text = None
+            if not dry_run:
+                out_path.write_text(build_assessments_md(state), encoding="utf-8")
+                save_review_state(state, state_path)
+            print(f"State rewound to segment starting at doc {segment_start + 1}."
+                  + (f" Dropped {dropped_reviews} cached doc review(s)." if dropped_reviews else ""))
+
+    if state.final_done and not only_docs:
         if state.doc_index >= total:
             print("Review already complete. Use --reset to start over.")
             return 0
         state.final_done = False
         state.final_text = None
 
-    # If new documents have arrived and the last interim was partial, drop it and reprocess.
-    if state.interims and not since and total > state.doc_index:
-        last = state.interims[-1]
-        prev_end = state.interims[-2]["after_doc"] if len(state.interims) > 1 else 0
-        if last["after_doc"] - prev_end < DEFAULT_WINDOW:
-            state.interims.pop()
-            state.doc_index = prev_end
-            state.final_done = False
-            state.final_text = None
-            if not dry_run:
-                save_review_state(state, state_path)
-            print(f"Last segment was partial; rewinding to doc {prev_end + 1}.")
-
-    remaining_docs = all_docs[state.doc_index:]
     rates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
-
-    segments_done = state.doc_index // DEFAULT_WINDOW
-    segments_total = (total + DEFAULT_WINDOW - 1) // DEFAULT_WINDOW
+    segments_done = len(state.interims)
 
     if state.doc_index == 0:
         print(f"{total} documents  •  {segments_total} segments  •  model: {effective_model}")
@@ -1863,14 +2186,13 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         print(f"Resuming at segment {segments_done + 1} of {segments_total} (doc {state.doc_index + 1} of {total})  •  model: {effective_model}")
 
     if dry_run:
-        remaining_segments = (len(remaining_docs) + DEFAULT_WINDOW - 1) // DEFAULT_WINDOW
-        num_calls = remaining_segments + (0 if state.final_done else 1)
-        print(f"Remaining docs: {len(remaining_docs)}  •  segments: {remaining_segments}  •  API calls: {num_calls}")
-        for i in range(0, len(remaining_docs), DEFAULT_WINDOW):
-            seg = remaining_docs[i:i + DEFAULT_WINDOW]
-            print(f"\n  Segment {segments_done + i // DEFAULT_WINDOW + 1} ({len(seg)} docs):")
+        remaining_segs = segments[segments_done:]
+        print(f"Remaining docs: {total - state.doc_index}  •  segments: {len(remaining_segs)}")
+        for i, seg in enumerate(remaining_segs):
+            print(f"\n  Segment {segments_done + i + 1} ({len(seg)} docs):")
             for doc in seg:
-                print(f"    {doc.name}")
+                wc = word_counts.get(doc.name, 0)
+                print(f"    {doc.name}  ({wc}w)")
         return 0
 
     client = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
@@ -1895,8 +2217,6 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         )
 
     def _write_output(header: str, text: str) -> None:
-        if no_write:
-            return
         entry = f"\n# {header}\n\n{text}\n\n---\n"
         with out_path.open("a", encoding="utf-8") as fh:
             fh.write(entry)
@@ -1908,11 +2228,11 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
 
     # Process next segment.
     processed_segment = False
-    if state.doc_index < total:
-        segment_docs = all_docs[state.doc_index:state.doc_index + DEFAULT_WINDOW]
-        n = state.doc_index // DEFAULT_WINDOW + 1
+    if state.doc_index < total and not only_docs:
+        segment_docs = next_segment(all_docs, state.doc_index, word_counts)
+        n = segments_done + 1
         after_doc = state.doc_index + len(segment_docs)
-        print(f"\n>>> Segment {n} (docs {state.doc_index + 1}–{after_doc} of {total}) <<<\n")
+        print(f"\n>>> Segment {n} of {segments_total} (docs {state.doc_index + 1}–{after_doc} of {total}) <<<\n")
 
         messages = build_interim_messages(segment_docs, interim_prompt)
         reply = _call_synthesis(messages)
@@ -1926,8 +2246,8 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         processed_segment = True
         save_review_state(state, state_path)
 
-    # Doc reviews + final assessment — only after all segments are complete.
-    if not state.final_done and state.doc_index >= total and not processed_segment:
+    # Doc reviews + final assessment.
+    if not state.final_done and (only_docs or state.doc_index >= total) and not processed_segment:
         from mdc.library import load_entries
 
         entries = load_entries(lib_path)
@@ -1953,24 +2273,63 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
                 print(f"  - {t}")
             return 1
 
-        mentioned_docs = [
-            title_to_path[t] for t in titles
-            if t in title_to_path and title_to_path[t].exists()
-        ]
+        mentioned_docs = sorted(
+            (title_to_path[t] for t in titles if t in title_to_path and title_to_path[t].exists()),
+            key=lambda p: p.name,
+        )
         included_filenames = {d.name for d in mentioned_docs}
 
-        # Drop saved reviews no longer in the include list.
+        # Rewrite include list in date order if it differs.
+        path_to_title = {title_to_path[t]: t for t in titles if t in title_to_path}
+        sorted_titles = [path_to_title[d] for d in mentioned_docs if d in path_to_title]
+        if sorted_titles != [t for t in titles if t in title_to_path]:
+            include_path.write_text(generate_include_list(sorted_titles), encoding="utf-8")
+            print(f"Rewrote {include_path.name} in date order.")
+
+        # Validate that all related docs are included and ordered before their referencing doc.
+        doc_pos = {d.name: i for i, d in enumerate(mentioned_docs)}
+        missing: list[tuple[str, str, str]] = []
+        for i, doc_path in enumerate(mentioned_docs):
+            related = _resolve_related_docs(doc_path, title_to_path)
+            doc_title = extract_doc_heading(doc_path)
+            for rel_path in related:
+                rel_title = extract_doc_heading(rel_path)
+                if rel_path.name not in included_filenames:
+                    missing.append((rel_title, doc_title, "not in include list"))
+                elif doc_pos[rel_path.name] > i:
+                    missing.append((rel_title, doc_title, "must appear before it"))
+        if missing:
+            print(f"\nWarning: {len(missing)} related document(s) have ordering or inclusion problems:")
+            for rel_title, by_title, reason in missing:
+                print(f'  "{rel_title}" (referenced by "{by_title}") — {reason}')
+            print()
+            answer = input("Proceed without them? [y/N] ").strip().lower()
+            if answer != "y":
+                print(f"Fix {include_path.name} before running review.")
+                return 1
+
+        # Drop saved reviews no longer in the doc set.
         dropped = [r for r in state.doc_reviews if r["filename"] not in included_filenames]
         if dropped:
-            print(f"Dropping {len(dropped)} saved review(s) no longer in include list.")
+            print(f"Dropping {len(dropped)} saved review(s) no longer in doc set.")
             state.doc_reviews = [r for r in state.doc_reviews if r["filename"] in included_filenames]
             save_review_state(state, state_path)
 
         cached = {r["filename"]: r for r in state.doc_reviews}
-        remaining_docs = [d for d in mentioned_docs if d.name not in cached]
+        def _needs_review(doc_path: Path) -> bool:
+            entry = cached.get(doc_path.name)
+            if entry is None:
+                return True
+            reviewed_at = entry.get("reviewed_at")
+            if not reviewed_at:
+                return False
+            import datetime as _dt
+            mtime = _dt.datetime.fromtimestamp(doc_path.stat().st_mtime, tz=_dt.timezone.utc)
+            return mtime > _dt.datetime.fromisoformat(reviewed_at)
+        remaining_docs = [d for d in mentioned_docs if _needs_review(d)]
         done = len(mentioned_docs) - len(remaining_docs)
 
-        print(f"\n>>> Reviewing {len(mentioned_docs)} mentioned documents <<<\n")
+        print(f"\n>>> Reviewing {len(mentioned_docs)} documents <<<\n")
         if done:
             print(f"  {done} already reviewed, resuming from doc {done + 1}.\n")
 
@@ -1980,21 +2339,22 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
             label = f'"{title}" ({date})' if date else f'"{title}"'
             print(f"\n[{len(cached) + 1}/{len(mentioned_docs)}] {label}")
             review_reply = client.generate_reply(
-                system_content,
-                build_doc_review_messages(doc_path, title_to_path),
+                [{"type": "text", "text": doc_review_system_prompt, "cache_control": {"type": "ephemeral"}}],
+                build_doc_review_messages(doc_path, title_to_path,
+                                          reviews={k: v["text"] for k, v in cached.items()}),
                 on_delta=_print_reply_delta,
                 reasoning_effort="none",
             )
             print()
             _record_cost(review_reply)
-            entry = {"filename": doc_path.name, "label": label, "text": review_reply.text}
+            entry = {"filename": doc_path.name, "label": label, "text": review_reply.text, "reviewed_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
             state.doc_reviews.append(entry)
             cached[doc_path.name] = entry
             save_review_state(state, state_path)
 
-        reviews_path = lib_path / REVIEWS_FILENAME
+        reviews_path = lib_path / _reviews_filename
         reviews_path.write_text(build_reviews_md(state, entries), encoding="utf-8")
-        print(f"Wrote {REVIEWS_FILENAME}.")
+        print(f"Wrote {_reviews_filename}.")
 
         all_reviews = [cached[d.name]["text"] for d in mentioned_docs if d.name in cached]
         selected_reviews = "\n\n---\n\n".join(
@@ -2002,14 +2362,36 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
             for d in mentioned_docs if d.name in cached
         ) if all_reviews else None
 
-        included_titles = set(titles)
-        manifest_summaries = build_manifest_summaries(entries, included_titles)
-        summary_count = len([e for e in entries if e.title not in included_titles and e.summary])
+        included_doc_titles = {extract_doc_heading(d) for d in mentioned_docs}
+        manifest_summaries = build_manifest_summaries(entries, included_doc_titles)
+        summary_count = len([e for e in entries if e.title not in included_doc_titles and e.summary])
         print(f"  Including summaries for {summary_count} additional documents.\n")
 
-        if not no_write:
+        if not only_docs:
+            # Estimate token budget before committing to the final call.
+            _sys_toks      = len(system_prompt) // 4
+            _interim_toks  = sum(len(e["text"]) for e in state.interims) // 4
+            _review_toks   = len(selected_reviews) // 4 if selected_reviews else 0
+            _prompt_toks   = len(final_prompt_text) // 4
+            _final_tokens  = _sys_toks + _interim_toks + _review_toks + _prompt_toks
+            if _final_tokens > 200_000:
+                print(f"Error: final assessment context is ~{_final_tokens:,} tokens, exceeding the 200k limit.")
+                print(f"  System prompt:    {_sys_toks:>8,}")
+                print(f"  Interim segments: {_interim_toks:>8,}")
+                print(f"  Doc reviews:      {_review_toks:>8,}")
+                print(f"  Final prompt:     {_prompt_toks:>8,}")
+                _over = _final_tokens - 200_000
+                _include_src = f"THEME-{theme_slug}.md" if theme_slug else "REVIEW_INCLUDE.md"
+                if mentioned_docs and _review_toks > 0:
+                    _per_review = _review_toks / len(mentioned_docs)
+                    _remove = -(-_over // int(_per_review)) if _per_review >= 1 else _over
+                    print(f"\nAdd ~{_remove} document(s) to the ## Exclude section of {_include_src} and run again.")
+                else:
+                    print(f"\nReduce the include list in {_include_src} and run again.")
+                return 1
+
             print(f"\n>>> Final assessment <<<\n")
-            messages = build_final_messages(state.interims, final_prompt_text, selected_reviews, manifest_summaries)
+            messages = build_final_messages(state.interims, final_prompt_text, selected_reviews)
             reply = _call_synthesis(messages)
             print()
             _record_cost(reply)
@@ -2018,14 +2400,20 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
             save_review_state(state, state_path)
             out_path.write_text(build_assessments_md(state, include_toc=include_toc), encoding="utf-8")
 
+            assessment_path = lib_path / _assessment_filename
+            assessment_path.write_text(build_assessment_md(state), encoding="utf-8")
+            reviews_path.write_text(build_reviews_md(state, entries), encoding="utf-8")
+            print(f"Wrote {_assessment_filename}, {_reviews_filename}.")
+            _render_review_pdfs(assessment_path, reviews_path)
+
     if state.doc_index < total:
         remaining = total - state.doc_index
-        remaining_segs = (remaining + DEFAULT_WINDOW - 1) // DEFAULT_WINDOW
+        remaining_segs = len(segments) - len(state.interims)
         print(f"\nPaused. {remaining} docs remaining ({remaining_segs} segments). Run again to continue.")
         print(f"Cumulative cost: {_format_total(state.cumulative_cost)}.")
     else:
         print(f"\nReview complete. Total cost: {_format_total(state.cumulative_cost)}.")
-    if not no_write:
+    if not only_docs:
         print(f"Output: {out_path}")
     return 0
 
