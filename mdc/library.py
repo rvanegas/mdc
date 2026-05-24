@@ -581,7 +581,9 @@ def build_index(
     result = []
 
     for md_path in sorted(library_path.rglob("*.md")):
-        if md_path.name in (MANIFEST_FILENAME, INDEX_FILENAME, KEYS_FILENAME, REFERENCES_FILENAME, RELATED_FILENAME, REVIEW_FILENAME, REVIEW_INCLUDE_FILENAME, ASSESSMENT_FILENAME, REVIEWS_FILENAME):
+        if md_path.name in (MANIFEST_FILENAME, INDEX_FILENAME, KEYS_FILENAME, REFERENCES_FILENAME, RELATED_FILENAME, REVIEW_FILENAME, REVIEW_INCLUDE_FILENAME, ASSESSMENT_FILENAME, REVIEWS_FILENAME, "THEMES.md"):
+            continue
+        if re.match(r'^(THEME|REVIEW|ASSESSMENT|REVIEWS)-.+\.md$', md_path.name):
             continue
         if (library_path / "REVISIONS") in md_path.parents:
             continue

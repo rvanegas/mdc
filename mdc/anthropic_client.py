@@ -40,6 +40,16 @@ def _thinking_params(
     )
 
 
+# Fields the API accepts for each server-side block type on round-trip.
+# Derived from the SDK's *Param TypedDicts; responses include extra fields the API won't accept back.
+_BLOCK_KEEP: dict[str, frozenset[str]] = {
+    "server_tool_use": frozenset({"type", "id", "name", "input", "caller", "cache_control"}),
+    "web_search_tool_result": frozenset({"type", "tool_use_id", "content", "caller", "cache_control"}),
+    "code_execution_tool_result": frozenset({"type", "tool_use_id", "content", "cache_control"}),
+    "bash_code_execution_tool_result": frozenset({"type", "tool_use_id", "content", "cache_control"}),
+}
+
+
 def _content_block_dict(block: object) -> dict[str, object]:
     """Serialize a content block to only the fields the API accepts on round-trip."""
     t = getattr(block, "type", None)
@@ -49,7 +59,9 @@ def _content_block_dict(block: object) -> dict[str, object]:
         return {"type": "tool_use", "id": block.id, "name": block.name, "input": dict(block.input)}  # type: ignore[union-attr]
     if t == "thinking":
         return {"type": "thinking", "thinking": block.thinking, "signature": block.signature}  # type: ignore[union-attr]
-    return block.model_dump()  # type: ignore[union-attr]
+    d = block.model_dump()  # type: ignore[union-attr]
+    keep = _BLOCK_KEEP.get(t or "")
+    return {k: v for k, v in d.items() if k in keep} if keep else d
 
 
 @dataclass
