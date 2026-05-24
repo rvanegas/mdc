@@ -568,63 +568,46 @@ THEMES_FILENAME = "THEMES.md"
 def generate_themes_template() -> str:
     return (
         "# Themes\n"
-        "<!-- Add themes: - code : full name -->\n"
-        "<!-- Add terms under ## full_name subsections -->\n\n"
+        "<!-- Add themes: - code : full name -->\n\n"
         "# Documents\n"
         "<!-- Populated automatically by mdc review --theme -->\n"
     )
 
 
-def parse_themes_md(path: Path) -> tuple[dict[str, str], dict[str, list[str]], dict[str, set[str]]]:
+def parse_themes_md(path: Path) -> tuple[dict[str, str], dict[str, set[str]]]:
     """Parse THEMES.md.
 
     Returns:
         themes: {code: full_name}
-        theme_terms: {code: [term, ...]}
         doc_assignments: {title: set_of_codes}
     """
     content = path.read_text(encoding="utf-8")
     themes: dict[str, str] = {}
-    name_to_code: dict[str, str] = {}
-    theme_terms: dict[str, list[str]] = {}
     doc_assignments: dict[str, set[str]] = {}
 
     section: str | None = None
-    current_term_code: str | None = None
 
     for line in content.splitlines():
         stripped = line.strip()
         if stripped == "# Themes":
             section = "themes"
-            current_term_code = None
             continue
         elif stripped == "# Documents":
             section = "documents"
-            current_term_code = None
             continue
         elif stripped.startswith("# "):
             section = None
-            current_term_code = None
             continue
 
         if section == "themes":
-            if stripped.startswith("## "):
-                name = stripped[3:].strip()
-                current_term_code = name_to_code.get(name.lower())
-            elif stripped.startswith("- ") and not stripped.startswith("<!-- "):
+            if stripped.startswith("- ") and not stripped.startswith("<!-- "):
                 rest = stripped[2:]
-                if current_term_code is None:
-                    if " : " in rest:
-                        code, name = rest.split(" : ", 1)
-                        code = code.strip()
-                        name = name.strip()
-                        if code:
-                            themes[code] = name
-                            name_to_code[name.lower()] = code
-                            theme_terms.setdefault(code, [])
-                else:
-                    terms = [t.strip() for t in rest.split(",") if t.strip()]
-                    theme_terms.setdefault(current_term_code, []).extend(terms)
+                if " : " in rest:
+                    code, name = rest.split(" : ", 1)
+                    code = code.strip()
+                    name = name.strip()
+                    if code:
+                        themes[code] = name
 
         elif section == "documents":
             if stripped.startswith("- ") and not stripped.startswith("<!-- "):
@@ -636,7 +619,30 @@ def parse_themes_md(path: Path) -> tuple[dict[str, str], dict[str, list[str]], d
                     if title:
                         doc_assignments[title] = set(c for c in codes_str if not c.isspace())
 
-    return themes, theme_terms, doc_assignments
+    return themes, doc_assignments
+
+
+def parse_combinations(path: Path) -> list[list[str]]:
+    """Parse the # Combinations section of THEMES.md.
+
+    Returns a list of combinations, each a list of theme names.
+    """
+    content = path.read_text(encoding="utf-8")
+    combos: list[list[str]] = []
+    in_section = False
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped == "# Combinations":
+            in_section = True
+            continue
+        elif stripped.startswith("# "):
+            in_section = False
+            continue
+        if in_section and stripped.startswith("- ") and not stripped.startswith("<!-- "):
+            names = [n.strip() for n in stripped[2:].split(",") if n.strip()]
+            if names:
+                combos.append(names)
+    return combos
 
 
 def write_themes_md(
@@ -683,7 +689,7 @@ def ensure_theme_subsection(themes_path: Path, theme_code: str, theme_name: str)
 def sync_themes_docs(themes_path: Path, lib_path: Path) -> int:
     """Add missing library docs to # Documents as unclassified. Returns count added."""
     from mdc.library import load_entries
-    themes, theme_terms, doc_assignments = parse_themes_md(themes_path)
+    themes, doc_assignments = parse_themes_md(themes_path)
     entries = sorted(load_entries(lib_path), key=lambda e: e.rel_path)
     title_order = [e.title for e in entries]
     added = 0
@@ -708,109 +714,3 @@ def build_themed_synthesis_messages(
         {"type": "text", "text": synthesis_prompt},
     ]}]
 
-
-def write_theme_selection(
-    path: Path,
-    titles: list[str],
-    total_tokens: float,
-) -> None:
-    """Replace the ## Selection section of a theme file with the given titles."""
-    content = path.read_text(encoding="utf-8")
-    content = re.sub(r"\n## Auto-Included\b.*", "", content, flags=re.DOTALL).rstrip()
-    n = len(titles)
-    token_str = f"~{total_tokens / 1000:.0f}k tokens estimated"
-    lines = [f"\n\n## Auto-Included\n<!-- {n} documents, {token_str} -->\n"]
-    lines += [f"- {t}" for t in titles]
-    path.write_text(content + "\n".join(lines) + "\n", encoding="utf-8")
-
-
-def select_docs_by_theme(
-    lib_path: Path,
-    terms: list[str],
-    include_titles: list[str],
-    exclude_titles: list[str],
-) -> tuple[list[Path], dict[str, int], list[str]]:
-    """Score and sort documents by theme relevance.
-
-    Returns (scored_paths, scores_by_rel_path, related_term_keys).
-    scored_paths is the full scored list sorted by score desc, date asc — no token packing.
-    Force-includes are prepended; excludes are removed.
-    Callers are responsible for packing to a token limit.
-    """
-    from mdc.library import (
-        _RELATIONS_STATE_PATH,
-        _TERMS_STATE_PATH,
-        load_entries,
-        parse_keys_md,
-    )
-
-    try:
-        terms_data = json.loads(_TERMS_STATE_PATH.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        terms_data = {}
-    term_map: dict[str, list[dict]] = terms_data.get("terms", {})
-
-    try:
-        rel_data = json.loads(_RELATIONS_STATE_PATH.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        rel_data = {}
-    relations: dict[str, list[str]] = rel_data.get("relations", {})
-
-    alias_map, _, _ = parse_keys_md(lib_path)
-
-    def resolve(t: str) -> str:
-        return alias_map.get(t) or alias_map.get(t.casefold()) or t
-
-    folded_map = {k.casefold(): k for k in term_map}
-
-    primary_keys: set[str] = set()
-    related_keys: list[str] = []
-    seen_related: set[str] = set()
-    for ct in (resolve(t) for t in terms):
-        key = folded_map.get(ct.casefold())
-        if key:
-            primary_keys.add(key)
-    for key in primary_keys:
-        for rel in relations.get(key, []):
-            rel_key = folded_map.get(rel.casefold())
-            if rel_key and rel_key not in primary_keys and rel_key not in seen_related:
-                related_keys.append(rel_key)
-                seen_related.add(rel_key)
-
-    scores: dict[str, int] = {}
-    for key in primary_keys:
-        for doc in term_map.get(key, []):
-            scores[doc["rel_path"]] = scores.get(doc["rel_path"], 0) + 2
-    for key in related_keys:
-        for doc in term_map.get(key, []):
-            scores[doc["rel_path"]] = scores.get(doc["rel_path"], 0) + 1
-
-    entries = load_entries(lib_path)
-    title_to_rel: dict[str, str] = {e.title: e.rel_path for e in entries}
-    rel_to_path: dict[str, Path] = {e.rel_path: lib_path / Path(e.rel_path) for e in entries}
-
-    exclude_rels: set[str] = set()
-    for title in exclude_titles:
-        rel = title_to_rel.get(title)
-        if rel:
-            exclude_rels.add(rel)
-
-    include_rels: list[str] = []
-    include_rel_set: set[str] = set()
-    for title in include_titles:
-        rel = title_to_rel.get(title)
-        if rel and rel not in exclude_rels:
-            include_rels.append(rel)
-            include_rel_set.add(rel)
-
-    for rel in exclude_rels:
-        scores.pop(rel, None)
-
-    scored_rels = sorted(
-        ((rel, s) for rel, s in scores.items() if rel not in exclude_rels and rel not in include_rel_set),
-        key=lambda x: (-x[1], Path(x[0]).name),
-    )
-
-    all_selected = list(dict.fromkeys(include_rels + [r for r, _ in scored_rels]))
-    paths = [rel_to_path[r] for r in all_selected if r in rel_to_path]
-    return paths, scores, related_keys

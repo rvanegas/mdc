@@ -248,10 +248,13 @@ def main(argv: list[str] | None = None) -> int:
                 since=args.since,
                 only_docs=args.only_docs,
                 rebuild=args.rebuild,
+                theme=args.theme,
                 selection=args.selection,
                 doc_start=args.doc_start,
                 docs=args.docs,
                 evaluate=args.evaluate,
+                action=args.action,
+                action_themes=args.action_themes,
             )
         if args.command == "index":
             return run_index(
@@ -425,6 +428,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rebuild REVIEW.md from saved state without making API calls.",
     )
     review_parser.add_argument(
+        "--theme",
+        default=None,
+        metavar="NAME",
+        help="Theme code or name (required for --docs and --assess).",
+    )
+    review_parser.add_argument(
         "--selection",
         action="store_true",
         default=False,
@@ -449,6 +458,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Synthesize individual document reviews into a thematic assessment.",
+    )
+    review_parser.add_argument(
+        "action",
+        nargs="?",
+        default=None,
+        metavar="ACTION",
+        help="Subcommand: 'tokens' to show review token counts by theme.",
+    )
+    review_parser.add_argument(
+        "action_themes",
+        nargs="*",
+        metavar="THEME",
+        help="Theme codes or names for the action subcommand.",
     )
 
     # relate
@@ -1747,7 +1769,7 @@ def _render_review_pdfs(*md_paths: Path) -> None:
                     print(f"pandoc error on {md_path.name}: {e.stderr.decode()[:300]}")
 
 
-def run_review(library_path: str | None, reset: bool, dry_run: bool = False, since: str | None = None, only_docs: bool = False, rebuild: bool = False, selection: bool = False, doc_start: int | None = None, docs: bool = False, evaluate: bool = False) -> int:
+def run_review(library_path: str | None, reset: bool, dry_run: bool = False, since: str | None = None, only_docs: bool = False, rebuild: bool = False, theme: str | None = None, selection: bool = False, doc_start: int | None = None, docs: bool = False, evaluate: bool = False, action: str | None = None, action_themes: list[str] | None = None) -> int:
     import hashlib
     from mdc.config import _state_dir
     from mdc.anthropic_client import AnthropicChatClient
@@ -1779,6 +1801,7 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         build_themed_synthesis_messages,
         _DEFAULT_THEMED_SYNTHESIS_PROMPT,
         _demote_headings,
+        parse_combinations,
         parse_themes_md,
         save_review_state,
         THEMES_FILENAME,
@@ -1816,11 +1839,111 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
 
     themes_path = lib_path / THEMES_FILENAME
 
+    if action == "tokens":
+        if not themes_path.exists():
+            print(f"Error: {THEMES_FILENAME} not found.")
+            return 1
+        all_themes_tok, doc_assignments_tok = parse_themes_md(themes_path)
+        if not all_themes_tok:
+            print(f"No themes defined in {THEMES_FILENAME}.")
+            return 1
+
+        global_state_tok = load_review_state(_state_dir / f"review-{path_hash}.json")
+        review_by_filename_tok = {r["filename"]: r for r in global_state_tok.doc_reviews}
+
+        from mdc.library import load_entries as _le_tok
+        title_to_filename_tok = {
+            e.title: Path(e.rel_path).name for e in _le_tok(lib_path)
+        }
+
+        name_to_code_tok = {v.lower(): k for k, v in all_themes_tok.items()}
+
+        def _theme_tokens(*codes: str) -> tuple[int, int, float]:
+            seen: set[str] = set()
+            reviewed = 0
+            tokens = 0.0
+            for code in codes:
+                for t, t_codes in doc_assignments_tok.items():
+                    if code not in t_codes or t in seen:
+                        continue
+                    seen.add(t)
+                    fn = title_to_filename_tok.get(t)
+                    r = review_by_filename_tok.get(fn) if fn else None
+                    if r:
+                        reviewed += 1
+                        tokens += len(r["text"]) / 4
+            return reviewed, len(seen), tokens
+
+        # Resolve requested theme codes.
+        requested: list[str] = []
+        for t in (action_themes or []):
+            if t in all_themes_tok:
+                requested.append(t)
+            elif t.lower() in name_to_code_tok:
+                requested.append(name_to_code_tok[t.lower()])
+            else:
+                print(f"Error: theme '{t}' not found in {THEMES_FILENAME}.")
+                return 1
+
+        def _print_table(rows: list, sum_row: tuple | None = None) -> None:
+            name_w = max(len(r[0]) for r in rows)
+            rev_w  = max(len(str(r[1])) for r in rows)
+            tot_w  = max(len(str(r[2])) for r in rows)
+            tok_w  = max(len(f"~{r[3] / 1000:.0f}k") for r in rows)
+            name_w = max(name_w, len("Theme"))
+            frac_header = "Rev/Total"
+            frac_w = rev_w + 1 + tot_w
+            frac_header_w = max(frac_w, len(frac_header))
+            tok_w  = max(tok_w, len("Tokens"))
+            hdr = f"  {'Theme':<{name_w}}  {frac_header:>{frac_header_w}}  {'Tokens':>{tok_w}}"
+            sep = "  " + "-" * (len(hdr) - 2)
+            print(hdr)
+            print(sep)
+            for name, reviewed, total, tokens in rows:
+                frac = f"{reviewed:>{rev_w}}/{total:>{tot_w}}"
+                tok  = f"~{tokens / 1000:.0f}k"
+                print(f"  {name:<{name_w}}  {frac:>{frac_header_w}}  {tok:>{tok_w}}")
+            if sum_row:
+                name, reviewed, total, tokens = sum_row
+                frac = f"{reviewed:>{rev_w}}/{total:>{tot_w}}"
+                tok  = f"~{tokens / 1000:.0f}k"
+                print(sep)
+                print(f"  {name:<{name_w}}  {frac:>{frac_header_w}}  {tok:>{tok_w}}")
+
+        if requested:
+            total_reviewed = 0
+            total_docs = 0
+            total_tokens = 0.0
+            names = []
+            for code in requested:
+                reviewed, total, tokens = _theme_tokens(code)
+                total_reviewed += reviewed
+                total_docs += total
+                total_tokens += tokens
+                names.append(all_themes_tok[code])
+            rows = [(n, *_theme_tokens(c)) for n, c in zip(names, requested)]
+            _print_table(rows, sum_row=("Sum", total_reviewed, total_docs, total_tokens))
+        else:
+            codes = sorted(all_themes_tok)
+            rows = [(all_themes_tok[c], *_theme_tokens(c)) for c in codes]
+            _print_table(rows)
+
+            combos = parse_combinations(themes_path) if themes_path.exists() else []
+            if combos:
+                print()
+                combo_rows = [
+                    (", ".join(ns), *_theme_tokens(*[name_to_code_tok[n.lower()] for n in ns if n.lower() in name_to_code_tok]))
+                    for ns in combos
+                ]
+                _print_table(combo_rows)
+
+        return 0
+
     if selection:
         if not themes_path.exists():
             print(f"Error: {THEMES_FILENAME} not found. Define themes first.")
             return 1
-        all_themes_ns, _, doc_assignments_ns = parse_themes_md(themes_path)
+        all_themes_ns, doc_assignments_ns = parse_themes_md(themes_path)
         if not all_themes_ns:
             print(f"No themes defined in {THEMES_FILENAME}.")
             return 1
@@ -1829,14 +1952,22 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         entries_ns = _le_ns(lib_path)
 
         # Sync: add any library docs not yet in THEMES.md.
+        _library_titles = {e.title for e in entries_ns}
         _added_sync = 0
+        _removed_sync = 0
         for _e_sync in entries_ns:
             if _e_sync.title not in doc_assignments_ns:
                 doc_assignments_ns[_e_sync.title] = set()
                 _added_sync += 1
-        if _added_sync:
+        for _t_sync in [t for t in doc_assignments_ns if t not in _library_titles]:
+            del doc_assignments_ns[_t_sync]
+            _removed_sync += 1
+        if _added_sync or _removed_sync:
             write_themes_md(themes_path, doc_assignments_ns, list(doc_assignments_ns.keys()))
-            print(f"Added {_added_sync} new document(s) to {THEMES_FILENAME}.")
+            if _added_sync:
+                print(f"Added {_added_sync} new document(s) to {THEMES_FILENAME}.")
+            if _removed_sync:
+                print(f"Removed {_removed_sync} deleted document(s) from {THEMES_FILENAME}.")
 
         summary_by_title_ns = {e.title: e.summary for e in entries_ns}
         terms_by_title_ns = {e.title: e.terms for e in entries_ns}
@@ -1878,15 +2009,34 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
             return ch
 
         def _render_prompt(codes: set) -> int:
-            parts = [
-                f"[{c}:{all_themes_ns[c]}]" if c in codes else f"{c}:{all_themes_ns[c]}"
-                for c in sorted(all_themes_ns)
-            ]
-            lines = textwrap.wrap("  ".join(parts), width=76, initial_indent="  ", subsequent_indent="  ")
-            lines.append("  ·/↵ next")
-            for line in lines:
+            tokens = [f"{c}:{all_themes_ns[c]}" for c in sorted(all_themes_ns)]
+            sep = "  "
+            indent = "  "
+            groups: list[list[str]] = []
+            current: list[str] = []
+            current_len = len(indent)
+            for token in tokens:
+                added = len(token) if not current else len(sep) + len(token)
+                if current and current_len + added > 76:
+                    groups.append(current)
+                    current = [token]
+                    current_len = len(indent) + len(token)
+                else:
+                    current.append(token)
+                    current_len += added
+            if current:
+                groups.append(current)
+            output = []
+            for group in groups:
+                parts = []
+                for token in group:
+                    c = token.split(":")[0]
+                    parts.append(f"\033[7m{token}\033[m" if c in codes else token)
+                output.append(indent + sep.join(parts))
+            output.append(indent + "space: next  q: quit")
+            for line in output:
                 print(line)
-            return len(lines)
+            return len(output)
 
         if start_idx_ns:
             print(f"Resuming at {start_idx_ns + 1}/{total_ns}.\n")
@@ -1944,13 +2094,25 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         return 0
 
     if docs:
+        if not theme:
+            print("Error: --docs requires --theme.")
+            return 1
         if not themes_path.exists():
             print(f"Error: {THEMES_FILENAME} not found. Run 'mdc review --selection' first.")
             return 1
-        _, _, doc_assignments_docs = parse_themes_md(themes_path)
-        all_doc_titles = [t for t, codes in doc_assignments_docs.items() if codes]
+        all_themes_d, doc_assignments_docs = parse_themes_md(themes_path)
+        name_to_code_d = {v.lower(): k for k, v in all_themes_d.items()}
+        if theme in all_themes_d:
+            theme_code_d, theme_name_d = theme, all_themes_d[theme]
+        elif theme.lower() in name_to_code_d:
+            theme_code_d = name_to_code_d[theme.lower()]
+            theme_name_d = all_themes_d[theme_code_d]
+        else:
+            print(f"Error: theme '{theme}' not found in {THEMES_FILENAME}.")
+            return 1
+        all_doc_titles = [t for t, codes in doc_assignments_docs.items() if theme_code_d in codes]
         if not all_doc_titles:
-            print("No documents assigned to any theme. Run 'mdc review --selection' first.")
+            print(f"No documents assigned to {theme_name_d}. Run 'mdc review --selection' first.")
             return 1
 
         global_state_path = _state_dir / f"review-{path_hash}.json"
@@ -2037,13 +2199,26 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         return 0
 
     if evaluate:
+        if not theme:
+            print("Error: --assess requires --theme.")
+            return 1
         if not themes_path.exists():
             print(f"Error: {THEMES_FILENAME} not found. Run 'mdc review --selection' first.")
             return 1
-        _, _, doc_assignments_ev = parse_themes_md(themes_path)
-        all_evaluate_titles = [t for t, codes in doc_assignments_ev.items() if codes]
+        all_themes_ev, doc_assignments_ev = parse_themes_md(themes_path)
+        name_to_code_ev = {v.lower(): k for k, v in all_themes_ev.items()}
+        if theme in all_themes_ev:
+            theme_code_ev, theme_name_ev = theme, all_themes_ev[theme]
+        elif theme.lower() in name_to_code_ev:
+            theme_code_ev = name_to_code_ev[theme.lower()]
+            theme_name_ev = all_themes_ev[theme_code_ev]
+        else:
+            print(f"Error: theme '{theme}' not found in {THEMES_FILENAME}.")
+            return 1
+        theme_slug_ev = theme_name_ev.replace(" ", "-").lower()
+        all_evaluate_titles = [t for t, codes in doc_assignments_ev.items() if theme_code_ev in codes]
         if not all_evaluate_titles:
-            print("No documents assigned to any theme. Run 'mdc review --selection' first.")
+            print(f"No documents assigned to {theme_name_ev}. Run 'mdc review --selection' first.")
             return 1
 
         global_state_path = _state_dir / f"review-{path_hash}.json"
@@ -2096,7 +2271,7 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
         client = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
         system_content = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
 
-        print(f"\n>>> Thematic synthesis ({len(selected_reviews)} reviews) <<<\n")
+        print(f"\n>>> Thematic synthesis: {theme_name_ev} ({len(selected_reviews)} reviews) <<<\n")
         messages = build_themed_synthesis_messages(selected_reviews, synthesis_prompt)
         reply = client.generate_reply(system_content, messages, on_delta=_print_reply_delta, reasoning_effort="medium")
         print()
@@ -2111,12 +2286,13 @@ def run_review(library_path: str | None, reset: bool, dry_run: bool = False, sin
             )
             print(f"  {_format_cost(cost)}")
 
-        assessment_path = lib_path / ASSESSMENT_FILENAME
+        assessment_filename = f"ASSESSMENT-{theme_slug_ev}.md"
+        assessment_path = lib_path / assessment_filename
         assessment_path.write_text(
-            sanitize_for_pandoc(f"# Thematic Assessment\n\n{_demote_headings(reply.text)}\n"),
+            sanitize_for_pandoc(f"# Assessment: {theme_name_ev}\n\n{_demote_headings(reply.text)}\n"),
             encoding="utf-8",
         )
-        print(f"Wrote {ASSESSMENT_FILENAME}.")
+        print(f"Wrote {assessment_filename}.")
         _render_review_pdfs(assessment_path)
         return 0
 
