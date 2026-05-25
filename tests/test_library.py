@@ -39,7 +39,7 @@ def test_write_manifest_creates_file(tmp_path):
     manifest = tmp_path / MANIFEST_FILENAME
     assert manifest.exists()
     text = manifest.read_text()
-    assert "# Index" in text
+    assert "# Manifest" in text
     assert "a.md" in text
     assert "100w" in text
     assert "foo; bar" in text
@@ -90,16 +90,15 @@ def test_write_index_no_duplicate_paths(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_parse_keys_md_no_file(tmp_path):
-    alias_map, canonicals, exclusions, groups = parse_keys_md(tmp_path)
+    alias_map, canonicals, exclusions = parse_keys_md(tmp_path)
     assert alias_map == {}
     assert canonicals == set()
     assert exclusions == set()
-    assert groups == {}
 
 
 def test_parse_keys_md_plural(tmp_path):
     (tmp_path / KEYS_FILENAME).write_text("## Plural\nconcept\n")
-    alias_map, canonicals, exclusions, groups = parse_keys_md(tmp_path)
+    alias_map, canonicals, exclusions = parse_keys_md(tmp_path)
     assert "concepts" in alias_map
     assert alias_map["concepts"] == "concept"
     assert "concept" in canonicals
@@ -107,22 +106,24 @@ def test_parse_keys_md_plural(tmp_path):
 
 def test_parse_keys_md_alias(tmp_path):
     (tmp_path / KEYS_FILENAME).write_text("## Alias\nKant, Immanuel\n- Kant\n")
-    alias_map, canonicals, exclusions, groups = parse_keys_md(tmp_path)
+    alias_map, canonicals, exclusions = parse_keys_md(tmp_path)
     assert alias_map["Kant"] == "Kant, Immanuel"
     assert "Kant, Immanuel" in canonicals
 
 
 def test_parse_keys_md_exclude(tmp_path):
     (tmp_path / KEYS_FILENAME).write_text("## Exclude\nfoo\n")
-    _, _, exclusions, _ = parse_keys_md(tmp_path)
+    _, _, exclusions = parse_keys_md(tmp_path)
     assert "foo" in exclusions
 
 
 def test_parse_keys_md_group(tmp_path):
+    # ## Group is documented but not yet implemented; section is silently ignored.
     (tmp_path / KEYS_FILENAME).write_text("## Group\nparent\n- child\n")
-    _, _, _, groups = parse_keys_md(tmp_path)
-    assert "parent" in groups
-    assert "child" in groups["parent"]
+    alias_map, canonicals, exclusions = parse_keys_md(tmp_path)
+    assert alias_map == {}
+    assert canonicals == set()
+    assert exclusions == set()
 
 
 # ---------------------------------------------------------------------------
