@@ -75,9 +75,19 @@ def load_review_state(path: Path) -> ReviewState:
         return ReviewState()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        doc_reviews = list(data.get("doc_reviews") or data.get("responses", []))
+        raw = list(data.get("doc_reviews") or data.get("responses", []))
+        # Deduplicate by filename, keeping the most recently reviewed entry.
+        # Duplicates can accumulate when the first-match update (existing_idx)
+        # and the last-match dict lookup (review_by_filename) diverge.
+        seen: dict[str, dict] = {}
+        for r in raw:
+            fn = r.get("filename", "")
+            if not fn:
+                continue
+            if fn not in seen or r.get("reviewed_at", "") > seen[fn].get("reviewed_at", ""):
+                seen[fn] = r
         return ReviewState(
-            doc_reviews=doc_reviews,
+            doc_reviews=list(seen.values()),
             cumulative_cost=float(data.get("cumulative_cost", 0.0)),
         )
     except (json.JSONDecodeError, ValueError):
