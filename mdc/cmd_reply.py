@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 import time
 from pathlib import Path
@@ -191,12 +192,28 @@ def _reply_anthropic(
                 preloaded.append(result)
 
         related_summaries: list[str] = []
+        included_rel_paths: set[str] = set()
         for raw_title in transcript.related:
             rel_path = resolve_title(lib, raw_title)
             if rel_path is None:
                 status(f"! related document not found: \"{raw_title}\"")
             else:
                 related_summaries.append(_get_summary(lib, rel_path, exclude=exclude))
+                included_rel_paths.add(rel_path)
+
+        _ITALIC_RE = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
+        all_turn_text = "\n".join(
+            t.content for t in (*transcript.turns, *(
+                [transcript.pending_turn] if transcript.pending_turn else []
+            ))
+        )
+        for m in _ITALIC_RE.finditer(all_turn_text):
+            candidate = m.group(1)
+            rel_path = resolve_title(lib, candidate)
+            if rel_path and rel_path not in included_rel_paths and rel_path != exclude:
+                related_summaries.append(_get_summary(lib, rel_path, exclude=exclude))
+                included_rel_paths.add(rel_path)
+                status(f"inline title matched library document: \"{candidate}\" → {rel_path}")
 
         library_tools_prompt = (
             "You have access to the Personal Library — a collection of the user's own writings. "
