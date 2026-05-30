@@ -178,6 +178,8 @@ def main(argv: list[str] | None = None) -> int:
                 doc_start=args.doc_start,
                 docs=args.docs,
                 evaluate=args.evaluate,
+                pass2=args.pass2,
+                final=args.final,
                 action=args.action,
                 action_themes=args.action_themes,
             )
@@ -359,6 +361,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Synthesize individual document reviews into a thematic assessment.",
+    )
+    review_parser.add_argument(
+        "--pass2",
+        action="store_true",
+        default=False,
+        help="With --evaluate: generate a second-pass assessment using sibling pass1 assessments as context.",
+    )
+    review_parser.add_argument(
+        "--final",
+        action="store_true",
+        default=False,
+        help="Generate the final cross-theme assessment from all pass2 assessments.",
     )
     review_parser.add_argument(
         "action",

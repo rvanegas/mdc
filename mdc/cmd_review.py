@@ -10,7 +10,7 @@ from mdc.review import sanitize_for_pandoc
 from mdc.text_utils import _format_cost, _format_total, _lookup_price, _print_reply_delta
 
 
-def run_review(library_path: str | None, reset: bool, theme: str | None = None, selection: bool = False, doc_start: int | None = None, docs: bool = False, evaluate: bool = False, action: str | None = None, action_themes: list[str] | None = None) -> int:
+def run_review(library_path: str | None, reset: bool, theme: str | None = None, selection: bool = False, doc_start: int | None = None, docs: bool = False, evaluate: bool = False, pass2: bool = False, final: bool = False, action: str | None = None, action_themes: list[str] | None = None) -> int:
     import hashlib
     import sys
     from mdc.config import _state_dir
@@ -27,7 +27,8 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
         load_prompt,
         load_review_state,
         build_themed_synthesis_messages,
-        _DEFAULT_THEMED_SYNTHESIS_PROMPT,
+        _DEFAULT_THEMED_SYNTHESIS_PASS1_PROMPT,
+        _DEFAULT_THEMED_SYNTHESIS_PASS2_PROMPT,
         _demote_headings,
         parse_combinations,
         parse_themes_md,
@@ -532,35 +533,48 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
         if answer != "y":
             return 0
 
-        synthesis_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "synthesis-theme.md", _DEFAULT_THEMED_SYNTHESIS_PROMPT)
+        if pass2:
+            synthesis_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "synthesis-theme-pass2.md", _DEFAULT_THEMED_SYNTHESIS_PASS2_PROMPT)
+        else:
+            synthesis_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "synthesis-theme-pass1.md", _DEFAULT_THEMED_SYNTHESIS_PASS1_PROMPT)
         client = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
 
         # Build collection map so the model can situate itself within the whole.
         combos_ev = parse_combinations(themes_path)
-        name_to_code_ev2 = {v.lower(): k for k, v in all_themes_ev.items()}
 
         theme_names = sorted(all_themes_ev.values())
         lines = ["This collection is organized into the following themes:"]
         lines.append("  " + ", ".join(theme_names))
         if combos_ev:
-            lines.append("\nAnd the following combinations:")
+            lines.append("\nAnd the following theme groups:")
             for i, ns in enumerate(combos_ev, 1):
                 lines.append(f"  {i}. {', '.join(ns)}")
-
-        if theme and theme.isdigit():
-            scope_label = f"combination {theme} ({theme_name_ev})"
-        else:
-            scope_label = theme_name_ev
-
-        lines.append(
-            f"\nYou are assessing {scope_label}. "
-            "Where you observe a gap or absence, note it — but also consider whether it may be "
-            "addressed in another theme, and say so explicitly if plausible."
-        )
         collection_context = "\n".join(lines)
 
-        print(f"\n>>> Thematic synthesis: {theme_name_ev} ({len(selected_reviews)} reviews) <<<\n")
-        messages = build_themed_synthesis_messages(selected_reviews, synthesis_prompt, collection_context)
+        # For pass2, load sibling pass1 assessments as additional context.
+        sibling_assessments: list[tuple[str, str]] | None = None
+        if pass2:
+            sibling_assessments = []
+            pass1_suffix = f"ASSESSMENT-{theme_slug_ev}-pass1.md"
+            for af in sorted(lib_path.glob("ASSESSMENT-*-pass1.md")):
+                if af.name == pass1_suffix:
+                    continue
+                try:
+                    text = af.read_text(encoding="utf-8")
+                    af_lines = text.splitlines()
+                    af_name = af_lines[0].lstrip("# ").strip() if af_lines else af.stem
+                    af_body = "\n".join(af_lines[1:]).strip()
+                    sibling_assessments.append((af_name, af_body))
+                except OSError:
+                    pass
+            if not sibling_assessments:
+                print("Warning: no sibling pass1 assessments found. Run pass1 for other groups first.")
+
+        pass_label = "pass2" if pass2 else "pass1"
+        print(f"\n>>> Thematic synthesis ({pass_label}): {theme_name_ev} ({len(selected_reviews)} reviews) <<<\n")
+        messages = build_themed_synthesis_messages(
+            selected_reviews, synthesis_prompt, collection_context, sibling_assessments
+        )
         reply = client.generate_reply([], messages, on_delta=_print_reply_delta, reasoning_effort="medium")
         print()
 
@@ -574,7 +588,7 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
             )
             print(f"  {_format_cost(cost)}")
 
-        assessment_filename = f"ASSESSMENT-{theme_slug_ev}.md"
+        assessment_filename = f"ASSESSMENT-{theme_slug_ev}-{pass_label}.md"
         assessment_path = lib_path / assessment_filename
         assessment_path.write_text(
             sanitize_for_pandoc(f"# Assessment: {theme_name_ev}\n\n{_demote_headings(reply.text)}\n"),
@@ -584,12 +598,16 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
         _render_review_pdfs(assessment_path)
         return 0
 
+    if not final:
+        print("No action taken. Use --selection, --docs, --evaluate, or --final.")
+        return 0
+
     # Final cross-theme assessment.
     final_prompt_text = load_prompt(_REVIEW_PROMPTS_DIR / "final.md", _DEFAULT_FINAL_PROMPT)
 
-    assessment_files = sorted(lib_path.glob("ASSESSMENT-*.md"))
+    assessment_files = sorted(lib_path.glob("ASSESSMENT-*-pass2.md"))
     if not assessment_files:
-        print("No theme assessments found. Run 'mdc review --evaluate' for each theme first.")
+        print("No pass2 assessments found. Run 'mdc review --evaluate --pass2' for each theme group first.")
         return 1
 
     assessments: list[tuple[str, str]] = []
@@ -626,6 +644,4 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
     )
     print(f"Wrote {ASSESSMENT_FILENAME}.")
     _render_review_pdfs(assessment_path)
-    return 0
-
     return 0

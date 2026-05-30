@@ -232,25 +232,37 @@ def load_prompt(prompt_file: Path | None, default: str) -> str:
     return default
 
 
-_DEFAULT_THEMED_SYNTHESIS_PROMPT = """\
-Thematic Assessment
+_DEFAULT_THEMED_SYNTHESIS_PASS1_PROMPT = """\
+Thematic Assessment — First Pass
 
-The individual document reviews above were selected around a shared theme. \
-Synthesize them into a single thematic assessment:
+Synthesize the document reviews above into a compact assessment of the themes covered \
+here. This will be read by the assessors of other theme groups, who need to know what \
+ground has been covered — what arguments made, what positions established, what tensions \
+identified — so they can reference your findings without repeating them.
 
 (Do not begin your response with a top-level heading or title. Start directly with \
 the body of the assessment.)
 
-1. The Theme — what concerns, questions, or problems unite these documents? \
-How coherently do they form a cluster? What is at its edges or missing?
+Address, in whatever order and proportion the material warrants: what is covered and \
+established; what is distinctive or original; what is left open or deferred, especially \
+where resolution may depend on another theme group; and an overall verdict. \
+Target 700–900 words.
+"""
 
-2. The Contribution — what has been built within this theme? What is the quality \
-and character of the thinking?
+_DEFAULT_THEMED_SYNTHESIS_PASS2_PROMPT = """\
+Thematic Assessment — Second Pass
 
-3. The Tensions — what remains unresolved? What is underdeveloped?
+The document reviews above cover a set of themes. First-pass assessments of the other \
+theme groups are also provided as context.
 
-4. The Verdict — assessed against the field this work engages, what is the \
-significance of these documents as a thematic unit?
+(Do not begin your response with a top-level heading or title. Start directly with \
+the body of the assessment.)
+
+Write a full assessment of the themes covered here. Address, in whatever order and \
+proportion the material warrants: what has been established within each theme; the \
+quality and character of the thinking; what remains unresolved; and where the work here \
+intersects with, depends on, or stands in productive tension with work in other themes — \
+name the theme, name the concept or argument, characterize the relationship.
 
 Take the space this requires.
 """
@@ -398,6 +410,7 @@ def build_themed_synthesis_messages(
     reviews: list[dict],
     synthesis_prompt: str,
     collection_context: str | None = None,
+    sibling_assessments: list[tuple[str, str]] | None = None,
 ) -> list[dict]:
     """Build messages for a single themed synthesis call over a list of doc reviews."""
     block = "\n\n---\n\n".join(
@@ -406,6 +419,12 @@ def build_themed_synthesis_messages(
     content: list[dict] = []
     if collection_context:
         content.append({"type": "text", "text": collection_context, "cache_control": {"type": "ephemeral"}})
+    if sibling_assessments:
+        sibling_block = "\n\n---\n\n".join(
+            f"First-pass assessment of {name}:\n\n{body}"
+            for name, body in sibling_assessments
+        )
+        content.append({"type": "text", "text": sibling_block, "cache_control": {"type": "ephemeral"}})
     content.append({"type": "text", "text": block, "cache_control": {"type": "ephemeral"}})
     content.append({"type": "text", "text": synthesis_prompt})
     return [{"role": "user", "content": content}]
