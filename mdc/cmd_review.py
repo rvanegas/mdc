@@ -11,9 +11,7 @@ from mdc.text_utils import _format_cost, _format_total, _lookup_price, _print_re
 
 
 def run_review(library_path: str | None, reset: bool, theme: str | None = None, selection: bool = False, doc_start: int | None = None, docs: bool = False, evaluate: bool = False, pass2: bool = False, final: bool = False, action: str | None = None, action_themes: list[str] | None = None) -> int:
-    import hashlib
     import sys
-    from mdc.config import _state_dir
     from mdc.anthropic_client import AnthropicChatClient
     from mdc.review import (
         _DEFAULT_DOC_REVIEW_SYSTEM_PROMPT,
@@ -26,13 +24,14 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
         extract_doc_heading,
         load_prompt,
         load_review_state,
+        review_path_for,
+        save_doc_review,
         build_themed_synthesis_messages,
         _DEFAULT_THEMED_SYNTHESIS_PASS1_PROMPT,
         _DEFAULT_THEMED_SYNTHESIS_PASS2_PROMPT,
         _demote_headings,
         parse_combinations,
         parse_themes_md,
-        save_review_state,
         THEMES_FILENAME,
         write_themes_md,
     )
@@ -60,8 +59,6 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
         print(f"Error: '{lib_path}' is not a directory.")
         return 1
 
-    path_hash = hashlib.sha256(str(lib_path).encode()).hexdigest()[:8]
-
     # --start: override resume logic, begin at this 1-based document index.
     forced_start: int | None = (doc_start - 1) if doc_start is not None else None
 
@@ -76,7 +73,7 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
             print(f"No themes defined in {THEMES_FILENAME}.")
             return 1
 
-        global_state_tok = load_review_state(_state_dir / f"review-{path_hash}.json")
+        global_state_tok = load_review_state(lib_path)
         review_by_filename_tok = {r["filename"]: r for r in global_state_tok.doc_reviews}
 
         from mdc.library import load_entries as _le_tok
@@ -85,14 +82,13 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
         title_to_path_tok = {e.title: lib_path / e.rel_path for e in _entries_tok}
 
         def _review_is_current(title: str, r: dict) -> bool:
-            reviewed_at = r.get("reviewed_at")
-            if not reviewed_at:
-                return True
             doc_path = title_to_path_tok.get(title)
             if not doc_path or not doc_path.exists():
                 return True
-            mtime = datetime.datetime.fromtimestamp(doc_path.stat().st_mtime, tz=datetime.timezone.utc)
-            return mtime <= datetime.datetime.fromisoformat(reviewed_at)
+            try:
+                return review_path_for(doc_path).stat().st_mtime >= doc_path.stat().st_mtime
+            except OSError:
+                return False
 
         name_to_code_tok = {v.lower(): k for k, v in all_themes_tok.items()}
 
@@ -387,8 +383,7 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
                 print("No documents assigned to any theme. Run 'mdc review --selection' first.")
                 return 1
 
-        global_state_path = _state_dir / f"review-{path_hash}.json"
-        global_state = load_review_state(global_state_path)
+        global_state = load_review_state(lib_path)
         review_by_filename = {r["filename"]: r for r in global_state.doc_reviews}
 
         from mdc.library import load_entries as _le2
@@ -399,14 +394,10 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
             print(f"Warning: {len(unmatched)} title(s) not found in library — skipping.")
 
         def _themed_needs_review(doc_path: Path) -> bool:
-            entry = review_by_filename.get(doc_path.name)
-            if entry is None:
+            try:
+                return doc_path.stat().st_mtime > review_path_for(doc_path).stat().st_mtime
+            except OSError:
                 return True
-            reviewed_at = entry.get("reviewed_at")
-            if not reviewed_at:
-                return False
-            mtime = datetime.datetime.fromtimestamp(doc_path.stat().st_mtime, tz=datetime.timezone.utc)
-            return mtime > datetime.datetime.fromisoformat(reviewed_at)
 
         pending = [
             _title_to_path2[t] for t in all_doc_titles
@@ -457,15 +448,9 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
                 "filename": doc_path.name,
                 "label": label,
                 "text": review_reply.text,
-                "reviewed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             }
-            existing_idx = next((j for j, r in enumerate(global_state.doc_reviews) if r["filename"] == doc_path.name), None)
-            if existing_idx is not None:
-                global_state.doc_reviews[existing_idx] = entry
-            else:
-                global_state.doc_reviews.append(entry)
+            save_doc_review(review_path_for(doc_path), review_reply.text)
             cached[doc_path.name] = entry
-            save_review_state(global_state, global_state_path)
         print("\nReviews complete. Run:")
         print("  mdc review --evaluate")
         return 0
@@ -488,8 +473,7 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
             print(f"No documents assigned to {theme_name_ev}. Run 'mdc review --selection' first.")
             return 1
 
-        global_state_path = _state_dir / f"review-{path_hash}.json"
-        global_state = load_review_state(global_state_path)
+        global_state = load_review_state(lib_path)
         review_by_filename = {r["filename"]: r for r in global_state.doc_reviews}
 
         from mdc.library import load_entries as _le

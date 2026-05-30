@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -66,37 +67,56 @@ Take the space this requires.
 
 @dataclass
 class ReviewState:
-    doc_reviews: list[dict] = field(default_factory=list)  # {"filename", "label", "text", "reviewed_at"}
-    cumulative_cost: float = 0.0
+    doc_reviews: list[dict] = field(default_factory=list)  # {"filename", "label", "text"}
 
 
-def load_review_state(path: Path) -> ReviewState:
-    if not path.exists():
-        return ReviewState()
+def review_path_for(doc_path: Path) -> Path:
+    stem = doc_path.name.removesuffix(".md")
+    return doc_path.parent / f"{stem}.review.md"
+
+
+def load_review_state(lib_path: Path) -> ReviewState:
+    review_files = sorted(lib_path.rglob("*.review.md"))
+    if not review_files:
+        _migrate_review_json(lib_path)
+        review_files = sorted(lib_path.rglob("*.review.md"))
+    entries = []
+    for rp in review_files:
+        source_name = rp.name.removesuffix(".review.md") + ".md"
+        source_path = rp.parent / source_name
+        try:
+            text = rp.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        date = source_name[:10] if len(source_name) > 10 and source_name[4] == "-" else ""
+        title = extract_doc_heading(source_path)
+        label = f'"{title}" ({date})' if date else f'"{title}"'
+        entries.append({"filename": source_name, "label": label, "text": text})
+    return ReviewState(doc_reviews=entries)
+
+
+def _migrate_review_json(lib_path: Path) -> None:
+    from mdc.config import _state_dir
+    path_hash = hashlib.sha256(str(lib_path).encode()).hexdigest()[:8]
+    old_json = _state_dir / f"review-{path_hash}.json"
+    if not old_json.exists():
+        return
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        raw = list(data.get("doc_reviews") or data.get("responses", []))
-        # Deduplicate by filename, keeping the most recently reviewed entry.
-        # Duplicates can accumulate when the first-match update (existing_idx)
-        # and the last-match dict lookup (review_by_filename) diverge.
-        seen: dict[str, dict] = {}
-        for r in raw:
+        data = json.loads(old_json.read_text(encoding="utf-8"))
+        for r in data.get("doc_reviews") or []:
+            text = r.get("text", "")
             fn = r.get("filename", "")
-            if not fn:
+            if not text or not fn:
                 continue
-            if fn not in seen or r.get("reviewed_at", "") > seen[fn].get("reviewed_at", ""):
-                seen[fn] = r
-        return ReviewState(
-            doc_reviews=list(seen.values()),
-            cumulative_cost=float(data.get("cumulative_cost", 0.0)),
-        )
-    except (json.JSONDecodeError, ValueError):
-        return ReviewState()
+            rp = review_path_for(lib_path / fn)
+            rp.write_text(text, encoding="utf-8")
+        old_json.unlink()
+    except (json.JSONDecodeError, OSError):
+        pass
 
 
-def save_review_state(state: ReviewState, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(state), indent=2), encoding="utf-8")
+def save_doc_review(review_path: Path, text: str) -> None:
+    review_path.write_text(text, encoding="utf-8")
 
 
 def extract_doc_heading(path: Path) -> str:
