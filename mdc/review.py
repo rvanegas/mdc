@@ -80,10 +80,23 @@ def load_review_state(lib_path: Path) -> ReviewState:
     if not review_files:
         _migrate_review_json(lib_path)
         review_files = sorted(lib_path.rglob("*.review.md"))
+    doc_by_name: dict[str, list[Path]] | None = None
     entries = []
     for rp in review_files:
         source_name = rp.name.removesuffix(".review.md") + ".md"
         source_path = rp.parent / source_name
+        if not source_path.exists():
+            # Orphan: source doc isn't next to this review file (e.g. subdir mismatch).
+            # Build the doc map lazily, then relocate.
+            if doc_by_name is None:
+                doc_by_name = {}
+                for p in lib_path.rglob("*.md"):
+                    if not p.name.endswith(".review.md"):
+                        doc_by_name.setdefault(p.name, []).append(p)
+            rp = _relocate_orphan_review(rp, source_name, doc_by_name)
+            if rp is None:
+                continue
+            source_path = rp.parent / source_name
         try:
             text = rp.read_text(encoding="utf-8")
         except OSError:
@@ -95,6 +108,22 @@ def load_review_state(lib_path: Path) -> ReviewState:
     return ReviewState(doc_reviews=entries)
 
 
+def _relocate_orphan_review(rp: Path, source_name: str, doc_by_name: dict[str, list[Path]]) -> Path | None:
+    """Move a misplaced .review.md next to its source doc. Returns new path or None to skip."""
+    candidates = doc_by_name.get(source_name, [])
+    if len(candidates) != 1:
+        return None
+    new_rp = review_path_for(candidates[0])
+    if new_rp.exists():
+        rp.unlink(missing_ok=True)
+        return None
+    try:
+        rp.rename(new_rp)
+        return new_rp
+    except OSError:
+        return None
+
+
 def _migrate_review_json(lib_path: Path) -> None:
     from mdc.config import _state_dir
     path_hash = hashlib.sha256(str(lib_path).encode()).hexdigest()[:8]
@@ -103,12 +132,15 @@ def _migrate_review_json(lib_path: Path) -> None:
         return
     try:
         data = json.loads(old_json.read_text(encoding="utf-8"))
+        # Map basename → actual path so we place .review.md next to the doc even in subdirs.
+        actual_paths: dict[str, Path] = {p.name: p for p in lib_path.rglob("*.md")}
         for r in data.get("doc_reviews") or []:
             text = r.get("text", "")
             fn = r.get("filename", "")
             if not text or not fn:
                 continue
-            rp = review_path_for(lib_path / fn)
+            doc_path = actual_paths.get(fn, lib_path / fn)
+            rp = review_path_for(doc_path)
             rp.write_text(text, encoding="utf-8")
         old_json.unlink()
     except (json.JSONDecodeError, OSError):
