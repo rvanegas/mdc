@@ -5,7 +5,7 @@ import difflib
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 
@@ -39,6 +39,7 @@ class DocEntry:
     indexed_at: float = 0.0  # Unix timestamp; used for cache invalidation
     refs: tuple[str, ...] | None = None      # None = not yet extracted
     related: tuple[str, ...] | None = None   # None = not yet extracted
+    inbound_count: int = 0                   # number of other docs listing this in ## Related
 
 
 def _extract_title(content: str, fallback: str) -> str:
@@ -171,7 +172,8 @@ def write_manifest(library_path: Path, entries: list[DocEntry], timestamp: datet
     ]
     for e in entries:
         lines.append(_md_escape(e.rel_path))
-        lines.append(f"{_md_escape(e.title)} - {e.word_count}w")
+        ref_str = f" · {e.inbound_count} ref{'s' if e.inbound_count != 1 else ''}" if e.inbound_count else ""
+        lines.append(f"{_md_escape(e.title)} - {e.word_count}w{ref_str}")
         lines.append("")
         if e.terms:
             lines.append("  " + "; ".join(_md_escape(t) for t in e.terms))
@@ -275,6 +277,18 @@ def write_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
     relations = load_relations(library_path)
     total = len(inverted)
     lines = ["", "# Index", "", f"{total} term(s).", ""]
+    referenced = sorted(
+        [(e.inbound_count, e.rel_path, e.title) for e in entries if e.inbound_count > 0],
+        key=lambda x: (-x[0], x[1]),
+    )
+    if referenced:
+        lines.append("## Most Referenced")
+        lines.append("")
+        for count, rel_path, title in referenced[:20]:
+            lines.append(f"  {count:3d}  {_md_escape(rel_path)} — {_md_escape(title)}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
     for term in sorted(inverted, key=str.casefold):
         lines.append(_md_escape(term))
         for f in sorted(inverted[term], key=lambda x: x["rel_path"]):
@@ -335,6 +349,7 @@ def _entry_to_dict(e: DocEntry) -> dict:
         "summary": e.summary,
         "refs": list(e.refs) if e.refs is not None else None,
         "related": list(e.related) if e.related is not None else None,
+        "inbound_count": e.inbound_count,
     }
 
 
@@ -350,6 +365,7 @@ def _entry_from_dict(d: dict) -> DocEntry:
         indexed_at=_parse_indexed_at(d.get("indexed_at")),
         refs=tuple(refs) if refs is not None else None,
         related=tuple(related) if related is not None else None,
+        inbound_count=d.get("inbound_count", 0),
     )
 
 
@@ -528,7 +544,22 @@ def write_related(library_path: Path, entries: list[DocEntry]) -> list[str]:
     return warnings
 
 
+def _compute_backlinks(entries: list[DocEntry]) -> dict[str, int]:
+    from mdc.form import slugify
+    slug_index = {slugify(e.title): e.rel_path for e in entries}
+    counts: dict[str, int] = {}
+    for e in entries:
+        for title in (e.related or ()):
+            target = slug_index.get(slugify(title))
+            if target:
+                counts[target] = counts.get(target, 0) + 1
+    return counts
+
+
 def _finalize(library_path: Path, entries_by_path: dict[str, DocEntry], result: list[DocEntry]) -> list[str]:
+    backlink_counts = _compute_backlinks(result)
+    result = [replace(e, inbound_count=backlink_counts.get(e.rel_path, 0)) for e in result]
+    entries_by_path = {e.rel_path: e for e in result}
     _save_state(library_path, entries_by_path)
     write_manifest(library_path, result, datetime.datetime.now())
     warnings = write_index(library_path, result)
@@ -718,7 +749,8 @@ def lookup_term(library_path: Path, term: str, exclude: str | None = None) -> st
         return msg
     entries = _load_state(library_path)
     lines = [key]
-    docs = sorted(term_map[key], key=lambda x: x["rel_path"])
+    # Most-referenced documents first; rel_path breaks ties deterministically.
+    docs = sorted(term_map[key], key=lambda x: (-entries[x["rel_path"]].inbound_count if x["rel_path"] in entries else 0, x["rel_path"]))
     if exclude:
         docs = [d for d in docs if d["rel_path"] != exclude]
     if docs:
@@ -746,7 +778,8 @@ def _get_summary(library_path: Path, rel_path: str, exclude: str | None = None) 
     entry = entries.get(rel_path)
     if entry is None:
         return f"No summary found for '{rel_path}'"
-    lines = [f"{entry.rel_path} — {entry.title} — {entry.word_count}w"]
+    ref_str = f" · {entry.inbound_count} ref{'s' if entry.inbound_count != 1 else ''}" if entry.inbound_count else ""
+    lines = [f"{entry.rel_path} — {entry.title} — {entry.word_count}w{ref_str}"]
     if entry.terms:
         lines.append("  " + "; ".join(entry.terms))
     if entry.summary:
@@ -772,7 +805,14 @@ def read_document(library_path: Path, rel_path: str, exclude: str | None = None)
     if not target.is_relative_to(library_path.resolve()):
         return f"Error: path '{rel_path}' is outside the library."
     if not target.exists():
-        return f"Error: document '{rel_path}' not found in library."
+        resolved = resolve_title(library_path, rel_path)
+        if resolved is None:
+            return f"Error: document '{rel_path}' not found in library."
+        if exclude and resolved == exclude:
+            return f"'{resolved}' is the document currently being replied to and is not available."
+        target = (library_path / resolved).resolve()
+        if not target.is_relative_to(library_path.resolve()):
+            return f"Error: resolved path is outside the library."
     return target.read_text(encoding="utf-8", errors="replace")
 
 
@@ -813,7 +853,7 @@ LIBRARY_TOOLS = [
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Relative path of the document.",
+                    "description": "Relative path or exact title of the document.",
                 }
             },
             "required": ["path"],
