@@ -163,6 +163,7 @@ def _reply_anthropic(
     strict: bool = False,
     web_search: bool = False,
     library_path: str | None = None,
+    edit: bool = False,
 ) -> str:
     from mdc.anthropic_client import AnthropicChatClient
     from mdc.library import LIBRARY_TOOLS, _get_summary, lookup_term, read_document, resolve_title
@@ -266,7 +267,7 @@ def _reply_anthropic(
 
     from mdc.edit_tools import EDIT_TOOL, build_edit_context, make_edit_executor, resolve_edit_targets
 
-    edit_targets = resolve_edit_targets(path)
+    edit_targets = resolve_edit_targets(path) if edit else []
     if edit_targets:
         _rev_dir = (config.library_path / "REVISIONS") if config.library_path else None
         edit_exec = make_edit_executor(edit_targets, wrap_width=config.wrap_width, revisions_dir=_rev_dir)
@@ -529,6 +530,7 @@ def run_reply(
     strict: bool = False,
     web_search: bool = False,
     library_path: str | None = None,
+    edit: bool = False,
 ) -> int:
     if path.suffix.lower() != ".md":
         print(f"Error: '{path}' does not have a .md extension.")
@@ -578,6 +580,7 @@ def run_reply(
                 strict=strict,
                 web_search=web_search,
                 library_path=library_path,
+                edit=edit,
             )
         except _LibraryTermNotFoundError as exc:
             missing = ", ".join(f'"{t}"' for t in exc.terms)

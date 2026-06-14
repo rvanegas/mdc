@@ -241,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:
                 strict=args.strict,
                 web_search=args.web_search,
                 library_path=args.lib,
+                edit=args.edit,
             )
         if args.command == "diff":
             extra = args.diff_args or []
@@ -510,6 +511,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Enable Anthropic web search (server-side tool).",
+    )
+    reply_parser.add_argument(
+        "-e", "--edit",
+        action="store_true",
+        default=False,
+        help="Allow the model to edit companion document files.",
     )
     reply_parser.add_argument("path", help="Path to the markdown transcript.")
 
