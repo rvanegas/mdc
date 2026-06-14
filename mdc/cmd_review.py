@@ -225,7 +225,7 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
         def _read_char() -> str:
             if not sys.stdin.isatty():
                 try:
-                    return input().strip().lower()[:1]
+                    return input().strip()[:1]
                 except EOFError:
                     return "\x00"
             import tty, termios
@@ -233,7 +233,7 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
             old = termios.tcgetattr(fd)
             try:
                 tty.setraw(fd)
-                ch = sys.stdin.read(1).lower()
+                ch = sys.stdin.read(1)
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old)
             if ch in ("\x03", "\x04", "\x1b"):
