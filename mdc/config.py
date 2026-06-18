@@ -97,6 +97,12 @@ def load_config() -> AppConfig:
 
     raw_library = str(data.get("library_path", "")).strip()
     library_path = Path(raw_library).expanduser().resolve() if raw_library else None
+    if library_path:
+        lib_prompt_path = library_path / "SYSTEM_PROMPT.md"
+        if lib_prompt_path.exists():
+            lib_extra = lib_prompt_path.read_text(encoding="utf-8").strip()
+            if lib_extra:
+                system_prompt = f"{system_prompt}\n\n{lib_extra}"
     index_model = str(data.get("index_model", "")).strip() or "claude-haiku-4-5"
 
     user_names = tuple(str(n).strip() for n in data.get("user_names", ["Prompt", "Rodrigo"]) if str(n).strip())
