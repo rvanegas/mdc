@@ -76,7 +76,16 @@ Argument only.
 
 Formalization sub-bullets are always indented with exactly two spaces. \
 When the user asks you to fix or write a formalization, use only the ASCII \
-grammar specified below and ensure the symbol names match ## Definitions.\
+grammar specified below and ensure the symbol names match ## Definitions.
+
+**Proposition numbering rules**
+- Never renumber existing propositions. Their numbers are stable identifiers \
+referenced by justifier lists and external notes.
+- When adding a new proposition, assign the next integer after the current \
+highest number in the file, regardless of where in the argument it appears.
+- Proposition numbers are plain integers only. No subscripts, primes, \
+apostrophes, asterisks, or other decorations (e.g. use `4`, not `3a`, `3'`, \
+or `3*`).\
 """
 
 _TRIAD_NOTE = """\
@@ -213,6 +222,13 @@ def make_edit_executor(targets: list[Path], wrap_width: int = 100, revisions_dir
             from mdc.cli import wrap_paragraphs
             new_str = wrap_paragraphs(new_str, width=wrap_width)
         new_content = current.replace(old_str, new_str, 1)
+
+        if target.name.endswith(".argument.md"):
+            from mdc.argue import validate_proposition_numbering
+            err = validate_proposition_numbering(current, new_content)
+            if err:
+                return f"Error: {err} No changes made."
+
         _write_version(target, new_content, revisions_dir=revisions_dir)
         diff = _make_diff(current, new_content, target.name)
         added = sum(1 for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++"))

@@ -9,6 +9,7 @@ _ASSUMPTION_RE = re.compile(r"^- (\d+)\s*:\s+(.+)$")
 _ARGUMENT_RE = re.compile(r"^- (\d+)(?:\s+\(from:\s*([\d,\s]+)\))?\s*:\s+(.+)$")
 _DEFINITION_RE = re.compile(r"^- ([A-Za-z][A-Za-z0-9]*(?:/\d+)?)\s*=\s*(.+)$")
 _PROP_SYMBOL_RE = re.compile(r"^- (\d+)[\s:(]")
+_DECORATED_PROP_RE = re.compile(r"^- (\d[\w'*]*)[\s:(]")
 
 
 def argument_to_markdown(args_dict: dict, title: str, date_str: str) -> str:
@@ -265,3 +266,55 @@ def markdown_to_argument(text: str) -> dict:
     if definitions["predicates"] or definitions["constants"]:
         result["definitions"] = definitions
     return result
+
+
+def _prop_numbers_in_sections(text: str) -> tuple[set[int], list[str]]:
+    """Return (integer proposition numbers, decorated symbols) found in Assumptions/Argument sections."""
+    numbers: set[int] = set()
+    decorated: list[str] = []
+    in_target = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped in ("## Assumptions", "## Argument"):
+            in_target = True
+            continue
+        if stripped.startswith("## "):
+            in_target = False
+            continue
+        if in_target and stripped.startswith("- "):
+            if _PROP_SYMBOL_RE.match(stripped):
+                numbers.add(int(_PROP_SYMBOL_RE.match(stripped).group(1)))
+            elif _DECORATED_PROP_RE.match(stripped):
+                decorated.append(_DECORATED_PROP_RE.match(stripped).group(1))
+    return numbers, decorated
+
+
+def validate_proposition_numbering(old_text: str, new_text: str) -> str | None:
+    """Return an error message if the edit violates proposition numbering rules, else None."""
+    old_nums, _ = _prop_numbers_in_sections(old_text)
+    new_nums, decorated = _prop_numbers_in_sections(new_text)
+
+    if decorated:
+        return (
+            f"Invalid proposition symbol(s) {decorated}: use plain integers only "
+            "(no subscripts, primes, apostrophes, or asterisks)."
+        )
+
+    missing = old_nums - new_nums
+    if missing:
+        return (
+            f"Proposition(s) {sorted(missing)} were renumbered or removed. "
+            "Existing proposition numbers must not change."
+        )
+
+    added = new_nums - old_nums
+    if added and old_nums:
+        max_old = max(old_nums)
+        conflicts = sorted(n for n in added if n <= max_old)
+        if conflicts:
+            return (
+                f"New proposition number(s) {conflicts} fall within the existing range "
+                f"(current max: {max_old}). New propositions must be numbered after the maximum."
+            )
+
+    return None
