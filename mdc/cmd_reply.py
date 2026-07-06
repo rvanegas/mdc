@@ -29,15 +29,24 @@ from mdc.text_utils import (
 
 # Pricing in USD per million tokens: {model_prefix: (input, output)}.
 # Cache creation tokens cost ~25% more than input; cache read tokens ~10%.
+# Longer/more specific prefixes must precede shorter ones they'd otherwise shadow
+# (e.g. "claude-opus-4-8" before "claude-opus-4").
 _ANTHROPIC_PRICING: dict[str, tuple[float, float]] = {
+    "claude-fable-5":    (10.00, 50.00),
+    "claude-mythos-5":   (10.00, 50.00),
+    "claude-opus-4-8":   ( 5.00, 25.00),
+    "claude-opus-4-7":   ( 5.00, 25.00),
+    "claude-opus-4-6":   ( 5.00, 25.00),
+    "claude-opus-4-5":   ( 5.00, 25.00),
+    "claude-opus-4-1":   (15.00, 75.00),
     "claude-opus-4":     (15.00, 75.00),
+    # Introductory pricing through 2026-08-31; $3.00/$15.00 standard pricing after.
+    "claude-sonnet-5":   ( 2.00, 10.00),
+    "claude-sonnet-4-6": ( 3.00, 15.00),
+    "claude-sonnet-4-5": ( 3.00, 15.00),
     "claude-sonnet-4":   ( 3.00, 15.00),
-    "claude-haiku-4":    ( 0.80,  4.00),
-    "claude-3-opus":     (15.00, 75.00),
-    "claude-3-5-sonnet": ( 3.00, 15.00),
-    "claude-3-5-haiku":  ( 0.80,  4.00),
-    "claude-3-sonnet":   ( 3.00, 15.00),
-    "claude-3-haiku":    ( 0.25,  1.25),
+    "claude-haiku-4-5":  ( 1.00,  5.00),
+    "claude-haiku-3-5":  ( 0.80,  4.00),
 }
 
 _OPENAI_PRICING: dict[str, tuple[float, float]] = {
