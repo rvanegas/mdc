@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from mdc.config import load_config
-from mdc.form import check_file, check_global_issues, fix_object_replacement, fix_rtl_spans, fix_section_spacing, fix_title_section, slugify
+from mdc.form import check_file, check_global_issues, fix_exported_chat, fix_object_replacement, fix_rtl_spans, fix_section_spacing, fix_title_section, slugify
 from mdc.transcript import TranscriptError, parse_transcript
 from mdc.assets import collect_local_assets
 
@@ -180,6 +180,9 @@ def main(argv: list[str] | None = None) -> int:
                 evaluate=args.evaluate,
                 pass2=args.pass2,
                 final=args.final,
+                afterword=args.afterword,
+                intro=args.intro,
+                compile_=args.compile_,
                 action=args.action,
                 action_themes=args.action_themes,
             )
@@ -374,6 +377,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Generate the final cross-theme assessment from all pass2 assessments.",
+    )
+    review_parser.add_argument(
+        "--afterword",
+        action="store_true",
+        default=False,
+        help="Generate an afterword; pass the response document title as the argument.",
+    )
+    review_parser.add_argument(
+        "--intro",
+        action="store_true",
+        default=False,
+        help="Generate INTRODUCTION.md with a table of contents and process description.",
+    )
+    review_parser.add_argument(
+        "--compile",
+        action="store_true",
+        default=False,
+        dest="compile_",
+        help="Concatenate all review outputs into COMPILED.md (intro, assessments, final, afterword).",
     )
     review_parser.add_argument(
         "action",
@@ -775,11 +797,12 @@ def run_fix(paths: list[Path]) -> int:
             any_errors = True
             continue
         raw = _read_file(path)
-        orc_lines, orc_applied = fix_object_replacement(raw.split("\n"))
+        exported_lines, exported_applied = fix_exported_chat(raw.split("\n"), path)
+        orc_lines, orc_applied = fix_object_replacement(exported_lines)
         rtl_lines, rtl_applied = fix_rtl_spans(orc_lines)
         new_lines, title_applied = fix_title_section(rtl_lines)
         new_text, spacing_applied = fix_section_spacing("\n".join(new_lines))
-        applied = orc_applied + rtl_applied + title_applied + spacing_applied
+        applied = exported_applied + orc_applied + rtl_applied + title_applied + spacing_applied
 
         if applied:
             diff = list(difflib.unified_diff(

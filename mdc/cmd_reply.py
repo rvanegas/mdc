@@ -235,10 +235,13 @@ def _reply_anthropic(
             "Documents have dates and views may evolve or be superseded; prefer more recent documents "
             "when there is tension between them, and flag apparent contradictions to the user.\n"
             "Only include a Personal Library document in your reply if you have called read_document on it. "
-            "List Personal Library documents under '## Related' using the format '| *Exact Title*' "
-            "(the section implies the source; no date, author, or other annotation). "
             "List any newly cited works under '## References' — additions only; do not repeat works already in the accumulated references. "
-            "Do not insert a horizontal rule before these sections."
+            "Do not insert a horizontal rule before these sections.\n\n"
+            "List Personal Library documents under '## Related', one per line, formatted exactly as follows "
+            "(the section implies the source; no date, author, or other annotation):\n\n"
+            "| *Exact Title*\n"
+            "| *Exact Title of Another Document*\n\n"
+            "The title MUST be wrapped in a single pair of asterisks — do not omit them."
         )
         library_context = library_tools_prompt
         if preloaded:
@@ -378,7 +381,10 @@ def _reply_anthropic(
         )
     if verbose:
         _print_anthropic_usage(model, reply)
-    return reply.text
+    pending_index = len(transcript.turns) - 1
+    pending_assets = assets_by_turn.get(pending_index, ())
+    asset_prefix = "".join(f"[asset: {a.path.name}]\n" for a in pending_assets)
+    return asset_prefix + reply.text
 
 
 def _reply_ollama(
@@ -464,7 +470,11 @@ def _reply_openai(
 
     if verbose:
         _print_openai_usage(model, reply)
-    return reply.text
+    assets_by_turn = collect_local_assets(transcript, path)
+    pending_index = len(transcript.turns) - 1
+    pending_assets = assets_by_turn.get(pending_index, ())
+    asset_prefix = "".join(f"[asset: {a.path.name}]\n" for a in pending_assets)
+    return asset_prefix + reply.text
 
 
 def _run_reply_watch(

@@ -28,6 +28,16 @@ def _normalize_ref(ref: str) -> str:
     return f"{prefix}*{title}*"
 
 
+def _normalize_related(line: str) -> str:
+    """Ensure the title portion of a Related line ('| Title') is italicized."""
+    if not line.startswith("| "):
+        return line
+    title = line[2:].strip()
+    if title.startswith("*") and title.endswith("*"):
+        return line
+    return f"| *{title}*"
+
+
 class TranscriptError(ValueError):
     """Raised when a transcript is malformed."""
 
@@ -293,7 +303,7 @@ def extract_related(reply: str) -> tuple[str, list[str]]:
         content = after_heading
         tail = ""
 
-    titles = [line.strip() for line in content.splitlines() if line.strip().startswith("| ")]
+    titles = [_normalize_related(line.strip()) for line in content.splitlines() if line.strip().startswith("| ")]
 
     before = reply[:section_start].rstrip()
     if tail.strip():

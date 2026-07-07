@@ -257,6 +257,48 @@ def build_final_messages(assessments: list[tuple[str, str]], final_prompt: str) 
     ]}]
 
 
+_DEFAULT_AFTERWORD_PROMPT = """\
+Afterword
+
+The materials above are: the final assessment of this body of work, followed by \
+individual document reviews for documents cited in the author's response, and finally \
+the author's own response to the assessment.
+
+Write an Afterword that responds directly to the author's response. Do not re-summarize \
+the assessment. Engage with what the author has said: where it extends, corrects, or \
+opens new ground relative to the assessment; where the assessment's characterizations \
+hold up or need revision in light of this response; what the exchange as a whole reveals \
+about the work and its author that neither the assessment nor the response quite captures \
+on its own.
+
+(Do not begin your response with a top-level heading or title. Start directly with \
+the body of the afterword.)
+"""
+
+
+def build_afterword_messages(
+    final_assessment: str,
+    source_docs: list[tuple[str, str]],
+    user_response: str,
+    prompt: str,
+) -> list[dict]:
+    content: list[dict] = [
+        {"type": "text", "text": f"Final Assessment:\n\n{final_assessment}", "cache_control": {"type": "ephemeral"}},
+    ]
+    if source_docs:
+        sources_block = "\n\n---\n\n".join(
+            f"Source: {label}\n\n{text}" for label, text in source_docs
+        )
+        content.append({
+            "type": "text",
+            "text": f"Document Reviews:\n\n{sources_block}",
+            "cache_control": {"type": "ephemeral"},
+        })
+    content.append({"type": "text", "text": f"Author's Response:\n\n{user_response}"})
+    content.append({"type": "text", "text": prompt})
+    return [{"role": "user", "content": content}]
+
+
 def _demote_headings(text: str, levels: int = 2) -> str:
     """Shift all ATX headings in text down by the given number of levels."""
     prefix = "#" * levels
@@ -267,6 +309,188 @@ def _demote_headings(text: str, levels: int = 2) -> str:
         else:
             lines.append(line)
     return "\n".join(lines)
+
+
+def _combo_sort_key(path: Path) -> int:
+    """Sort ASSESSMENT-combination-N-*.md files by N."""
+    import re as _re
+    m = _re.search(r"combination-(\d+)", path.name)
+    return int(m.group(1)) if m else 0
+
+
+def _build_review_context(lib_path: Path) -> dict:
+    """Shared context used by both build_introduction_md and build_appendix_md."""
+    from mdc.library import FINAL_ASSESSMENT_FILENAME, AFTERWORD_FILENAME
+
+    pass2_files = sorted(lib_path.glob("ASSESSMENT-*-pass2.md"), key=_combo_sort_key)
+    final_path = lib_path / FINAL_ASSESSMENT_FILENAME
+    afterword_path = lib_path / AFTERWORD_FILENAME
+
+    section_headings: list[str] = []
+    for f in pass2_files:
+        lines = f.read_text(encoding="utf-8").splitlines()
+        heading = next((l.lstrip("# ").strip() for l in lines if l.startswith("#")), f.stem)
+        section_headings.append(heading)
+
+    themes_path = lib_path / THEMES_FILENAME
+    if not themes_path.exists():
+        themes_path = lib_path.parent / THEMES_FILENAME
+    combos: list[list[str]] = parse_combinations(themes_path) if themes_path.exists() else []
+
+    return {
+        "pass2_files": pass2_files,
+        "section_headings": section_headings,
+        "has_final": final_path.exists(),
+        "has_afterword": afterword_path.exists(),
+        "combos": combos,
+        "doc_system_prompt": load_prompt(_REVIEW_PROMPTS_DIR / "doc-system.md", _DEFAULT_DOC_REVIEW_SYSTEM_PROMPT),
+        "pass1_prompt": load_prompt(_REVIEW_PROMPTS_DIR / "synthesis-theme-pass1.md", _DEFAULT_THEMED_SYNTHESIS_PASS1_PROMPT),
+        "pass2_prompt": load_prompt(_REVIEW_PROMPTS_DIR / "synthesis-theme-pass2.md", _DEFAULT_THEMED_SYNTHESIS_PASS2_PROMPT),
+        "final_prompt": load_prompt(_REVIEW_PROMPTS_DIR / "final.md", _DEFAULT_FINAL_PROMPT),
+        "afterword_prompt": load_prompt(_REVIEW_PROMPTS_DIR / "afterword.md", _DEFAULT_AFTERWORD_PROMPT),
+    }
+
+
+def build_introduction_md(lib_path: Path) -> str:
+    """Build INTRODUCTION.md — reader-facing intro with TOC and process overview (no verbatim prompts)."""
+    ctx = _build_review_context(lib_path)
+    section_headings = ctx["section_headings"]
+    has_final = ctx["has_final"]
+    has_afterword = ctx["has_afterword"]
+    combos = ctx["combos"]
+    n_pass2 = len(ctx["pass2_files"])
+    n_combos = len(section_headings)
+
+    # Table of contents
+    toc_lines: list[str] = []
+    n = 1
+    toc_lines.append(f"{n}. Introduction")
+    for title in section_headings:
+        n += 1
+        toc_lines.append(f"{n}. {title}")
+    if has_final:
+        n += 1
+        toc_lines.append(f"{n}. Final Assessment")
+    if has_afterword:
+        n += 1
+        toc_lines.append(f"{n}. Afterword")
+    toc_lines.append(f"{n + 1}. Appendix: Prompts")
+
+    parts: list[str] = []
+    parts.append("# Introduction\n")
+    parts.append("## Table of Contents\n")
+    parts.append("\n".join(toc_lines))
+    parts.append("\n")
+    parts.append("## How This Document Was Generated\n")
+    parts.append(
+        "This document collects the outputs of a multi-stage AI-assisted literary "
+        "review. The review proceeds in stages, each building on the previous: "
+        "individual document reviews, two passes of thematic synthesis, a final "
+        "cross-theme assessment"
+        + (", and an afterword responding to the author's reply" if has_afterword else "")
+        + ". The verbatim prompts used at each stage are reproduced in the Appendix.\n"
+    )
+
+    if combos:
+        parts.append(f"The collection is organized into {len(combos)} thematic group{'s' if len(combos) != 1 else ''}:\n")
+        parts.append("\n".join(f"{i}. {', '.join(names)}" for i, names in enumerate(combos, 1)))
+        parts.append("\n")
+
+    parts.append("### Stage 1: Individual Document Reviews\n")
+    parts.append(
+        "Each document in the collection was reviewed independently by the model, "
+        "without access to the broader collection. Related-document reviews were "
+        "provided where available. The output is a brief assessment — 300 words for "
+        "short documents, up to 800 for longer ones — covering the document's central "
+        "claims and concerns and closing with a frank verdict.\n"
+    )
+
+    parts.append("### Stage 2: First-Pass Thematic Assessments\n")
+    parts.append(
+        f"Documents were manually assigned to {n_combos} thematic groups. For each "
+        "group, all individual document reviews were assembled and fed to the model "
+        "to produce a compact first-pass thematic assessment (target: 700–900 words). "
+        "Each first-pass assessment was then shared with the assessors of the other "
+        "groups, so subsequent passes could reference established findings without "
+        "repeating them.\n"
+    )
+
+    parts.append("### Stage 3: Second-Pass Thematic Assessments\n")
+    parts.append(
+        "Each group's assessor received the individual document reviews for that group "
+        "together with the first-pass assessments of all other groups. The resulting "
+        f"second-pass assessments — {n_pass2} in total — form the main body of this "
+        "document. They address what has been established within each theme, the quality "
+        "of the thinking, what remains unresolved, and where the work intersects with "
+        "or stands in tension with work in other themes.\n"
+    )
+
+    parts.append("### Stage 4: Final Assessment\n")
+    parts.append(
+        f"All {n_pass2} second-pass assessments were assembled and fed to the model for "
+        "a single comprehensive final assessment covering the body of work as a whole: "
+        "its unity, its tensions, its significance, and the intellectual character of "
+        "its author.\n"
+    )
+
+    if has_afterword:
+        parts.append("### Stage 5: Afterword\n")
+        parts.append(
+            "After the final assessment was shared with the author, the author provided "
+            "a written response. The model was given the final assessment, the author's "
+            "response, and individual document reviews for any documents cited in that "
+            "response, and asked to write an afterword engaging with the exchange.\n"
+        )
+
+    return "\n".join(parts)
+
+
+def build_appendix_md(lib_path: Path) -> str:
+    """Build APPENDIX.md — verbatim prompts used at each stage of the review."""
+    ctx = _build_review_context(lib_path)
+    has_afterword = ctx["has_afterword"]
+
+    def _blockquote(text: str) -> str:
+        return "\n".join(f"> {line}" if line.strip() else ">" for line in text.strip().splitlines())
+
+    per_doc_prompt = (
+        'Write a {N}-word assessment of "{title}". What is it about? What are its central '
+        "claims, arguments, or concerns? Be specific and assessorial. Close with a frank verdict: "
+        "what the document achieves and what it leaves unresolved or underdeveloped. Where relevant, "
+        "draw on the related document reviews provided for context."
+    )
+
+    parts: list[str] = []
+    parts.append("# Appendix: Prompts\n")
+    parts.append(
+        "This appendix reproduces verbatim the prompts used at each stage of the review pipeline.\n"
+    )
+
+    parts.append("## Stage 1: Individual Document Reviews\n")
+    parts.append("**System prompt:**\n")
+    parts.append(_blockquote(ctx["doc_system_prompt"]))
+    parts.append("\n\n**Per-document prompt** (`{N}` is replaced by the word-count target for each document):\n")
+    parts.append(_blockquote(per_doc_prompt))
+    parts.append("\n")
+
+    parts.append("## Stage 2: First-Pass Thematic Assessments\n")
+    parts.append(_blockquote(ctx["pass1_prompt"]))
+    parts.append("\n")
+
+    parts.append("## Stage 3: Second-Pass Thematic Assessments\n")
+    parts.append(_blockquote(ctx["pass2_prompt"]))
+    parts.append("\n")
+
+    parts.append("## Stage 4: Final Assessment\n")
+    parts.append(_blockquote(ctx["final_prompt"]))
+    parts.append("\n")
+
+    if has_afterword:
+        parts.append("## Stage 5: Afterword\n")
+        parts.append(_blockquote(ctx["afterword_prompt"]))
+        parts.append("\n")
+
+    return "\n".join(parts)
 
 
 def build_reviews_md(state: ReviewState) -> str:

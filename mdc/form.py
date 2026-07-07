@@ -246,6 +246,115 @@ def fix_title_section(lines: list[str]) -> tuple[list[str], list[str]]:
     return lines, fixes
 
 
+# ── exported-chat converter ───────────────────────────────────────────────────
+#
+# Recognises the format produced by the "AI Chat Exporter" browser extension:
+#
+#     > From: https://claude.ai/chat/...
+#
+#     # you asked
+#     message time: YYYY-MM-DD HH:MM:SS
+#     <user message text>
+#
+#     ---
+#
+#     # claude response
+#     <assistant message text>
+#
+#     ---
+#
+# and rewrites it as an mdc transcript (# Title / date / ## Prompt / ## Claude).
+
+_EXPORTED_ROLE_RE = re.compile(r'^#\s*(you asked|claude response)\s*$', re.IGNORECASE)
+
+_EXPORTED_ROLE_HEADER: dict[str, str] = {
+    "you asked": "## Prompt",
+    "claude response": "## Claude",
+}
+
+
+def is_exported_chat(text: str) -> bool:
+    """Detect the AI Chat Exporter markdown format."""
+    return bool(re.search(r'^#\s*(you asked|claude response)\s*$', text, re.IGNORECASE | re.MULTILINE))
+
+
+def _parse_exported_chat(text: str) -> list[tuple[str, str | None, str]]:
+    """Parse AI Chat Exporter markdown into (mdc header, timestamp, content) tuples."""
+    messages: list[tuple[str, str | None, str]] = []
+    blocks = re.split(r'\n---\n', text)
+
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+
+        if block.startswith('> From:'):
+            block = re.sub(r'^> From:.*\n+', '', block).strip()
+            if not block:
+                continue
+
+        lines = block.split('\n')
+        first_line = next((ln.strip() for ln in lines if ln.strip()), '')
+
+        role_m = _EXPORTED_ROLE_RE.match(first_line)
+        if not role_m:
+            continue
+        header = _EXPORTED_ROLE_HEADER[role_m.group(1).lower()]
+
+        timestamp = None
+        ts_match = re.search(r'message time:\s*(\d{4}-\d{2}-\d{2})', block, re.IGNORECASE)
+        if ts_match:
+            timestamp = ts_match.group(1)
+
+        content_lines = [
+            ln for ln in lines
+            if not _EXPORTED_ROLE_RE.match(ln.strip()) and not re.match(r'^message time:', ln.strip(), re.IGNORECASE)
+        ]
+        content = '\n'.join(content_lines).strip()
+        if content:
+            messages.append((header, timestamp, content))
+
+    return messages
+
+
+def fix_exported_chat(lines: list[str], path: Path) -> tuple[list[str], list[str]]:
+    """
+    Convert an AI Chat Exporter transcript into mdc format.
+
+    Title is derived from the filename (stripping a leading yyyy-mm-dd- prefix
+    if present); date comes from that same prefix, falling back to the first
+    message's timestamp.
+
+    Returns (new_lines, fixes); fixes is empty if the file isn't in exporter format.
+    """
+    text = "\n".join(lines)
+    if not is_exported_chat(text):
+        return lines, []
+
+    messages = _parse_exported_chat(text)
+    if not messages:
+        return lines, []
+
+    stem = path.stem
+    m = re.match(r'^(\d{4}-\d{2}-\d{2})-(.+)$', stem)
+    if m:
+        date, title_stem = m.group(1), m.group(2)
+    else:
+        date = next((ts for _, ts, _ in messages if ts), "")
+        title_stem = stem
+    title = title_stem.replace("-", " ").replace("_", " ").title()
+
+    out = ["", f"# {title}", date, ""]
+    for header, _, content in messages:
+        out.append(header)
+        out.append("")
+        out.append(content)
+        out.append("")
+
+    new_text = "\n".join(out).rstrip("\n") + "\n"
+    return new_text.split("\n"), [f"converted exported chat format ({len(messages)} messages) to mdc format"]
+
+
 def fix_section_spacing(text: str) -> tuple[str, list[str]]:
     """Ensure exactly one blank line before and after every ## header, and exactly one trailing newline."""
     fixes: list[str] = []
@@ -503,6 +612,10 @@ def check_file(path: Path) -> list[str]:
                 continue
             if not stripped.startswith("| "):
                 err(i + 1, f"related line must start with '| ': {stripped!r}")
+                return errors
+            title = stripped[2:].strip()
+            if not re.match(r"^\*[^*]+\*$", title):
+                err(i + 1, f"related title is not in italics — expected '| *Title*': {stripped!r}")
                 return errors
 
     return errors

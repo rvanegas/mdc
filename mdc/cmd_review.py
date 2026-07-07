@@ -10,16 +10,21 @@ from mdc.review import sanitize_for_pandoc
 from mdc.text_utils import _format_cost, _format_total, _lookup_price, _print_reply_delta
 
 
-def run_review(library_path: str | None, reset: bool, theme: str | None = None, selection: bool = False, doc_start: int | None = None, docs: bool = False, evaluate: bool = False, pass2: bool = False, final: bool = False, action: str | None = None, action_themes: list[str] | None = None) -> int:
+def run_review(library_path: str | None, reset: bool, theme: str | None = None, selection: bool = False, doc_start: int | None = None, docs: bool = False, evaluate: bool = False, pass2: bool = False, final: bool = False, afterword: bool = False, intro: bool = False, compile_: bool = False, action: str | None = None, action_themes: list[str] | None = None) -> int:
     import sys
     from mdc.anthropic_client import AnthropicChatClient
     from mdc.review import (
         _DEFAULT_DOC_REVIEW_SYSTEM_PROMPT,
         _DEFAULT_FINAL_PROMPT,
+        _DEFAULT_AFTERWORD_PROMPT,
         _REVIEW_PROMPTS_DIR,
         build_doc_review_messages,
         build_final_messages,
+        build_afterword_messages,
+        build_introduction_md,
+        build_appendix_md,
         build_reviews_md,
+        _combo_sort_key,
         _resolve_related_docs,
         extract_doc_heading,
         load_prompt,
@@ -36,7 +41,11 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
         write_themes_md,
     )
     from mdc.library import (
-        ASSESSMENT_FILENAME,
+        FINAL_ASSESSMENT_FILENAME,
+        AFTERWORD_FILENAME,
+        INTRODUCTION_FILENAME,
+        APPENDIX_FILENAME,
+        COMPILED_FILENAME,
         REVIEWS_FILENAME,
     )
     from mdc.cmd_reply import _ANTHROPIC_PRICING
@@ -582,14 +591,137 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
         _render_review_pdfs(assessment_path)
         return 0
 
+    if afterword:
+        if not action:
+            print("Error: --afterword requires a response document title.")
+            return 1
+        from mdc.library import load_entries as _load_entries_aw
+        _entries_aw = _load_entries_aw(lib_path)
+        _entry_aw = next((e for e in _entries_aw if e.title.casefold() == action.casefold()), None)
+        if _entry_aw is None:
+            print(f"Error: '{action}' not found in library index.")
+            return 1
+        response_file = lib_path / _entry_aw.rel_path
+        if not response_file.exists():
+            print(f"Error: '{action}' found in index but file missing.")
+            return 1
+
+        final_path = lib_path / FINAL_ASSESSMENT_FILENAME
+        if not final_path.exists():
+            print(f"Error: {FINAL_ASSESSMENT_FILENAME} not found. Run 'mdc review --final' first.")
+            return 1
+        final_text_raw = final_path.read_text(encoding="utf-8")
+        final_lines = final_text_raw.splitlines()
+        final_assessment = "\n".join(final_lines[1:]).strip() if final_lines and final_lines[0].startswith("#") else final_text_raw.strip()
+
+        user_response = response_file.read_text(encoding="utf-8")
+
+        import re as _re
+        from mdc.library import load_entries as _load_entries
+        _italic_re = _re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
+        _entries = _load_entries(lib_path)
+        _title_map = {e.title.casefold(): e for e in _entries}
+        source_docs: list[tuple[str, str]] = []
+        _seen_titles: set[str] = set()
+        for m in _italic_re.finditer(user_response):
+            key = m.group(1).casefold()
+            if key in _seen_titles:
+                continue
+            entry = _title_map.get(key)
+            if entry is None:
+                continue
+            _seen_titles.add(key)
+            doc_path = lib_path / entry.rel_path
+            rp = review_path_for(doc_path)
+            if not rp.exists():
+                print(f"Error: no review for '{entry.title}'. Run 'mdc review --docs' first.")
+                return 1
+            source_docs.append((entry.title, rp.read_text(encoding="utf-8")))
+        if source_docs:
+            print(f"Resolved {len(source_docs)} document review(s) from response.")
+
+        afterword_prompt = load_prompt(_REVIEW_PROMPTS_DIR / "afterword.md", _DEFAULT_AFTERWORD_PROMPT)
+        client = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
+        n_src = len(source_docs)
+        print(f"\n>>> Afterword (final assessment + {n_src} source doc(s)) <<<\n")
+        messages = build_afterword_messages(final_assessment, source_docs, user_response, afterword_prompt)
+        reply = client.generate_reply([], messages, on_delta=_print_reply_delta, reasoning_effort="medium")
+        print()
+
+        rates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
+        if rates:
+            in_rate, out_rate = rates
+            cost = (
+                reply.input_tokens * in_rate / 1_000_000
+                + reply.output_tokens * out_rate / 1_000_000
+                + reply.cache_creation_tokens * in_rate * 1.25 / 1_000_000
+                + reply.cache_read_tokens * in_rate * 0.10 / 1_000_000
+            )
+            print(f"  {_format_cost(cost)}")
+
+        afterword_path = lib_path / AFTERWORD_FILENAME
+        afterword_path.write_text(
+            sanitize_for_pandoc(f"# Afterword\n\n{_demote_headings(reply.text)}\n"),
+            encoding="utf-8",
+        )
+        print(f"Wrote {AFTERWORD_FILENAME}.")
+        _render_review_pdfs(afterword_path)
+        return 0
+
+    if intro:
+        intro_md = build_introduction_md(lib_path)
+        intro_path = lib_path / INTRODUCTION_FILENAME
+        intro_path.write_text(sanitize_for_pandoc(intro_md), encoding="utf-8")
+        print(f"Wrote {INTRODUCTION_FILENAME}.")
+        appendix_md = build_appendix_md(lib_path)
+        appendix_path = lib_path / APPENDIX_FILENAME
+        appendix_path.write_text(sanitize_for_pandoc(appendix_md), encoding="utf-8")
+        print(f"Wrote {APPENDIX_FILENAME}.")
+        return 0
+
+    if compile_:
+        intro_path = lib_path / INTRODUCTION_FILENAME
+        appendix_path = lib_path / APPENDIX_FILENAME
+        pass2_files = sorted(lib_path.glob("ASSESSMENT-*-pass2.md"), key=_combo_sort_key)
+        final_path = lib_path / FINAL_ASSESSMENT_FILENAME
+        afterword_path = lib_path / AFTERWORD_FILENAME
+
+        if not intro_path.exists():
+            print(f"Warning: {INTRODUCTION_FILENAME} not found. Run 'mdc review --intro' first.")
+
+        sections: list[str] = []
+        if intro_path.exists():
+            sections.append(intro_path.read_text(encoding="utf-8").rstrip())
+        if not pass2_files:
+            print("Warning: no ASSESSMENT-*-pass2.md files found.")
+        for f in pass2_files:
+            sections.append(f.read_text(encoding="utf-8").rstrip())
+        if final_path.exists():
+            sections.append(final_path.read_text(encoding="utf-8").rstrip())
+        else:
+            print(f"Warning: {FINAL_ASSESSMENT_FILENAME} not found.")
+        if afterword_path.exists():
+            sections.append(afterword_path.read_text(encoding="utf-8").rstrip())
+        if appendix_path.exists():
+            sections.append(appendix_path.read_text(encoding="utf-8").rstrip())
+        elif not appendix_path.exists():
+            print(f"Warning: {APPENDIX_FILENAME} not found. Run 'mdc review --intro' first.")
+
+        compiled = "\n\n\\newpage\n\n".join(sections) + "\n"
+        compiled_path = lib_path / COMPILED_FILENAME
+        compiled_path.write_text(sanitize_for_pandoc(compiled), encoding="utf-8")
+        print(f"Wrote {COMPILED_FILENAME} ({len(sections)} section(s)).")
+        _render_review_pdfs(compiled_path)
+        return 0
+
     if not final:
-        print("No action taken. Use --selection, --docs, --evaluate, or --final.")
+        print("No action taken. Use --selection, --docs, --evaluate, --final, --afterword, --intro, or --compile.")
         return 0
 
     # Final cross-theme assessment.
     final_prompt_text = load_prompt(_REVIEW_PROMPTS_DIR / "final.md", _DEFAULT_FINAL_PROMPT)
 
-    assessment_files = sorted(lib_path.glob("ASSESSMENT-*-pass2.md"))
+    assessment_files = sorted(lib_path.glob("ASSESSMENT-*-pass2.md"), key=_combo_sort_key)
     if not assessment_files:
         print("No pass2 assessments found. Run 'mdc review --evaluate --pass2' for each theme group first.")
         return 1
@@ -621,11 +753,11 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
         )
         print(f"  {_format_cost(cost)}")
 
-    assessment_path = lib_path / ASSESSMENT_FILENAME
+    assessment_path = lib_path / FINAL_ASSESSMENT_FILENAME
     assessment_path.write_text(
         sanitize_for_pandoc(f"# Final Assessment\n\n{_demote_headings(reply.text)}\n"),
         encoding="utf-8",
     )
-    print(f"Wrote {ASSESSMENT_FILENAME}.")
+    print(f"Wrote {FINAL_ASSESSMENT_FILENAME}.")
     _render_review_pdfs(assessment_path)
     return 0

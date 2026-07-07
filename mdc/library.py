@@ -15,7 +15,11 @@ KEYS_FILENAME = "KEYS.md"
 REFERENCES_FILENAME = "REFERENCES.md"
 RELATED_FILENAME = "RELATED.md"
 REVIEW_FILENAME = "REVIEW.md"
-ASSESSMENT_FILENAME = "ASSESSMENT.md"
+FINAL_ASSESSMENT_FILENAME = "FINAL_ASSESSMENT.md"
+AFTERWORD_FILENAME = "AFTERWORD.md"
+INTRODUCTION_FILENAME = "INTRODUCTION.md"
+APPENDIX_FILENAME = "APPENDIX.md"
+COMPILED_FILENAME = "COMPILED.md"
 REVIEWS_FILENAME = "REVIEWS.md"
 from mdc.config import _state_dir as _mdc_state_dir
 _STATE_DIR = _mdc_state_dir
@@ -611,7 +615,8 @@ def build_index(
     result = []
 
     for md_path in sorted(library_path.rglob("*.md")):
-        if md_path.name in (MANIFEST_FILENAME, INDEX_FILENAME, KEYS_FILENAME, REFERENCES_FILENAME, RELATED_FILENAME, REVIEW_FILENAME, ASSESSMENT_FILENAME, REVIEWS_FILENAME, "THEMES.md"):
+        stem = md_path.name.split(".")[0]
+        if stem == stem.upper():
             continue
         if re.match(r'^(THEME|REVIEW|ASSESSMENT|REVIEWS)-.+\.md$', md_path.name):
             continue
