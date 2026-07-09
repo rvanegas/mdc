@@ -4,9 +4,24 @@ import datetime
 import difflib
 import json
 import re
+import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+
+_WRAP_WIDTH = 100
+
+
+def _wrap_line(text: str, *, initial_indent: str, subsequent_indent: str) -> str:
+    """Wrap a long single-line entry (summary, term list) to _WRAP_WIDTH columns."""
+    return textwrap.fill(
+        text,
+        width=_WRAP_WIDTH,
+        initial_indent=initial_indent,
+        subsequent_indent=subsequent_indent,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
 
 
 MANIFEST_FILENAME = "MANIFEST.md"
@@ -180,10 +195,11 @@ def write_manifest(library_path: Path, entries: list[DocEntry], timestamp: datet
         lines.append(f"{_md_escape(e.title)} - {e.word_count}w{ref_str}")
         lines.append("")
         if e.terms:
-            lines.append("  " + "; ".join(_md_escape(t) for t in e.terms))
+            joined = "; ".join(_md_escape(t) for t in e.terms)
+            lines.append(_wrap_line(joined, initial_indent="  ", subsequent_indent="  "))
             lines.append("")
         if e.summary:
-            lines.append("  " + _md_escape(e.summary))
+            lines.append(_wrap_line(_md_escape(e.summary), initial_indent="  ", subsequent_indent="  "))
         lines.append("")
         lines.append("---")
     (library_path / MANIFEST_FILENAME).write_text("\n".join(lines), encoding="utf-8")
@@ -299,7 +315,8 @@ def write_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
             lines.append(f"  {_md_escape(f['rel_path'])} — {_md_escape(f['title'])}")
         related = relations.get(term, [])
         if related:
-            lines.append("  Related: " + "; ".join(_md_escape(r) for r in sorted(related, key=str.casefold)))
+            joined = "; ".join(_md_escape(r) for r in sorted(related, key=str.casefold))
+            lines.append(_wrap_line("Related: " + joined, initial_indent="  ", subsequent_indent="    "))
         lines.append("")
         lines.append("---")
     (library_path / INDEX_FILENAME).write_text("\n".join(lines), encoding="utf-8")
