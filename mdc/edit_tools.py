@@ -28,7 +28,7 @@ EDIT_TOOL: dict[str, object] = {
                 "type": "string",
                 "description": (
                     "Filename of the companion file. For argument files, only "
-                    "Definitions, Assumptions, and Argument sections are editable; "
+                    "Definitions and Argument sections are editable; "
                     "evaluation sections are dianoia output and cannot be edited."
                 ),
             },
@@ -60,19 +60,16 @@ Keep this section in sync with the formalizations: if the user introduces a \
 new predicate or constant in a sub-bullet, add it here. If a symbol is \
 removed from all formalizations, remove it from Definitions.
 
-**## Assumptions**  (one line per premise)
+**## Argument**  (one line per premise; later steps may reference earlier ones as justifiers)
 - A: proposition text
   - formalization in ASCII logic     (indented two-space sub-bullet)
-
-**## Argument**  (derived steps, each referencing justifiers)
 - B (from: A): proposition text
   - formalization in ASCII logic
 
 **## Formal evaluation**, **## Content evaluation**, **## Improvement recommendations**
 These sections are generated exclusively by dianoia via `mdc argue`. \
 Do not edit them. Read them as context to understand the current evaluation \
-state of the argument, then focus edits on Definitions, Assumptions, and \
-Argument only.
+state of the argument, then focus edits on Definitions and Argument only.
 
 Formalization sub-bullets are always indented with exactly two spaces. \
 When the user asks you to fix or write a formalization, use only the ASCII \

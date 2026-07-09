@@ -26,12 +26,7 @@ def _read_title_date(text: str) -> tuple[str, str]:
 
 
 def _print_argument(args_dict: dict) -> None:
-    assumptions = args_dict.get("assumptions", [])
     argument = args_dict.get("argument", [])
-    if assumptions:
-        print("Assumptions:")
-        for s in assumptions:
-            print(f"  {s['symbol']}: {s['proposition']}")
     print("Argument:")
     for s in argument:
         j = f" (from: {', '.join(s['justifiers'])})" if s.get("justifiers") else ""
@@ -73,9 +68,9 @@ def _append_evaluation(path: Path, results: dict, verbose: bool) -> None:
     try:
         existing = markdown_to_argument(text)
     except ValueError:
-        existing = {"assumptions": [], "argument": []}
+        existing = {"argument": []}
     endorsed: dict = {}
-    for step in existing.get("assumptions", []) + existing.get("argument", []):
+    for step in existing.get("argument", []):
         form = step.get("formalization") or {}
         if form.get("endorsed") and form.get("ascii"):
             endorsed[step["symbol"]] = form["ascii"]
@@ -110,9 +105,9 @@ def _append_evaluation(path: Path, results: dict, verbose: bool) -> None:
                 + text[def_content_match.end(2):]
             )
         else:
-            # No existing section — insert before ## Assumptions or ## Argument
+            # No existing section — insert before ## Argument
             section_block = "\n## Definitions\n" + (new_def_content + "\n" if new_def_content else "")
-            insert_match = re.search(r"\n## (?:Assumptions|Argument)\b", text)
+            insert_match = re.search(r"\n## Argument\b", text)
             if insert_match:
                 text = text[: insert_match.start()] + section_block + text[insert_match.start():]
             else:

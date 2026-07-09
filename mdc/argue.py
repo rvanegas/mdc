@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 
 
-_ASSUMPTION_RE = re.compile(r"^- (\d+)\s*:\s+(.+)$")
 _ARGUMENT_RE = re.compile(r"^- (\d+)(?:\s+\(from:\s*([\d,\s]+)\))?\s*:\s+(.+)$")
 _DEFINITION_RE = re.compile(r"^- ([A-Za-z][A-Za-z0-9]*(?:/\d+)?)\s*=\s*(.+)$")
 _PROP_SYMBOL_RE = re.compile(r"^- (\d+)[\s:(]")
@@ -17,13 +16,12 @@ def argument_to_markdown(args_dict: dict, title: str, date_str: str) -> str:
 
     Raises ValueError on malformed input.
     """
-    assumptions = args_dict.get("assumptions")
     argument = args_dict.get("argument")
 
-    if assumptions is None or argument is None:
-        raise ValueError("argument dict must have 'assumptions' and 'argument' keys")
-    if not isinstance(assumptions, list) or not isinstance(argument, list):
-        raise ValueError("'assumptions' and 'argument' must be lists")
+    if argument is None:
+        raise ValueError("argument dict must have an 'argument' key")
+    if not isinstance(argument, list):
+        raise ValueError("'argument' must be a list")
     if not argument:
         raise ValueError("argument must have at least one step")
 
@@ -43,17 +41,6 @@ def argument_to_markdown(args_dict: dict, title: str, date_str: str) -> str:
                 label = f"{sym}/{arity}" if arity else sym
                 lines.append(f"- {label} = {p.get('value', '')}")
             lines.append("")
-
-    if assumptions:
-        lines.append("## Assumptions")
-        for step in assumptions:
-            symbol = step.get("symbol", "")
-            prop = step.get("proposition", "")
-            if not symbol or not prop:
-                raise ValueError(f"assumption step missing symbol or proposition: {step!r}")
-            lines.append(f"- {symbol}: {prop}")
-            _append_formalization_bullet(lines, step)
-        lines.append("")
 
     lines.append("## Argument")
     for step in argument:
@@ -77,7 +64,7 @@ def _append_formalization_bullet(lines: list, step: dict) -> None:
 
 
 def inject_formalizations(text: str, by_symbol: dict) -> str:
-    """Add formalization sub-bullets in ## Assumptions and ## Argument.
+    """Add formalization sub-bullets in ## Argument.
 
     Existing sub-bullets are dropped and re-emitted from by_symbol. The
     caller is responsible for ensuring by_symbol already reflects any endorsed
@@ -95,7 +82,7 @@ def inject_formalizations(text: str, by_symbol: dict) -> str:
     for line in lines:
         stripped = line.strip()
 
-        if stripped in ("## Assumptions", "## Argument"):
+        if stripped == "## Argument":
             flush()
             in_target = True
             last_symbol = None
@@ -131,11 +118,11 @@ def inject_formalizations(text: str, by_symbol: dict) -> str:
     return "\n".join(result)
 
 
-_CORE_SECTIONS = {"Definitions", "Assumptions", "Argument"}
+_CORE_SECTIONS = {"Definitions", "Argument"}
 
 
 def extract_core_sections(text: str) -> str:
-    """Return only the preamble and the three core sections of an argument file.
+    """Return only the preamble and the core sections of an argument file.
 
     Discards ## Formal evaluation, ## Content evaluation,
     ## Improvement recommendations, and any other unknown sections.
@@ -161,7 +148,6 @@ def markdown_to_argument(text: str) -> dict:
     """
     text = extract_core_sections(text)
 
-    assumptions: list[dict] = []
     argument: list[dict] = []
     definitions: dict = {"predicates": [], "constants": []}
     current_section: str | None = None
@@ -177,11 +163,6 @@ def markdown_to_argument(text: str) -> dict:
     for lineno, raw_line in enumerate(text.splitlines(), 1):
         line = raw_line.strip()
 
-        if line == "## Assumptions":
-            finalize()
-            current_section = "assumptions"
-            pending_list = assumptions
-            continue
         if line == "## Argument":
             finalize()
             current_section = "argument"
@@ -202,7 +183,7 @@ def markdown_to_argument(text: str) -> dict:
             continue
 
         # Formalization sub-bullet under a pending proposition
-        if current_section in ("assumptions", "argument") and raw_line.startswith("  - "):
+        if current_section == "argument" and raw_line.startswith("  - "):
             if pending_step is not None:
                 ascii_form = raw_line[4:].strip()
                 if ascii_form:
@@ -211,19 +192,6 @@ def markdown_to_argument(text: str) -> dict:
                         "json_structure": None,
                         "endorsed": True,
                     }
-            continue
-
-        if current_section == "assumptions" and line.startswith("- "):
-            finalize()
-            m = _ASSUMPTION_RE.match(line)
-            if not m:
-                raise ValueError(f"line {lineno}: cannot parse assumption: {raw_line!r}")
-            pending_step = {
-                "symbol": m.group(1),
-                "proposition": m.group(2).strip(),
-                "justifiers": [],
-                "truth_score": "1.0",
-            }
             continue
 
         if current_section == "argument" and line.startswith("- "):
@@ -262,20 +230,20 @@ def markdown_to_argument(text: str) -> dict:
     if not argument:
         raise ValueError("no argument steps found in file")
 
-    result: dict = {"assumptions": assumptions, "argument": argument}
+    result: dict = {"argument": argument}
     if definitions["predicates"] or definitions["constants"]:
         result["definitions"] = definitions
     return result
 
 
 def _prop_numbers_in_sections(text: str) -> tuple[set[int], list[str]]:
-    """Return (integer proposition numbers, decorated symbols) found in Assumptions/Argument sections."""
+    """Return (integer proposition numbers, decorated symbols) found in the Argument section."""
     numbers: set[int] = set()
     decorated: list[str] = []
     in_target = False
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped in ("## Assumptions", "## Argument"):
+        if stripped == "## Argument":
             in_target = True
             continue
         if stripped.startswith("## "):

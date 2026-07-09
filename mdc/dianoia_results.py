@@ -90,7 +90,6 @@ class PropositionChange(TypedDict):
     type: str  # "new" | "rewrite"
     original_symbol: str | None
     original_proposition: str | None
-    placement: str  # "assumption" | "argument"
     justifies_symbol: str | None
     justification_suggestions: list[str]
 
