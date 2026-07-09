@@ -16,6 +16,7 @@ from mdc.assets import collect_local_assets
 
 from mdc.cmd_diff import run_diff, run_files_ls
 from mdc.cmd_argue import run_argue
+from mdc.cmd_analyze import run_analyze
 from mdc.cmd_pdf import run_pdf
 from mdc.cmd_index import run_index
 from mdc.cmd_reply import run_reply, _LibraryTermNotFoundError
@@ -273,7 +274,14 @@ def main(argv: list[str] | None = None) -> int:
             path = _resolve_path_abbrev(args.path, Path.cwd(), secondary_priority=("argument", "document"))
             if path is None:
                 return 1
-            return run_argue(path, verbose=args.verbose, max_props=args.max_props, step=args.step)
+            return run_argue(path, max_props=args.max_props)
+        if args.command == "analyze":
+            if _require_bare(args.path):
+                return 1
+            path = _resolve_path_abbrev(args.path, Path.cwd(), secondary_priority=("argument", "document"))
+            if path is None:
+                return 1
+            return run_analyze(path, args.proposition, verbose=args.verbose)
         if args.command == "edit":
             if _require_bare(args.path):
                 return 1
@@ -609,14 +617,9 @@ def build_parser() -> argparse.ArgumentParser:
     # argue
     argue_parser = subparsers.add_parser(
         "argue",
-        help="Extract a structured argument from a plain document, or submit a companion argument file to dianoia for evaluation.",
+        help="Extract a structured argument from a plain document.",
     )
-    argue_parser.add_argument("path", help="Plain document (.md). Extracts argument to <stem>.argument.md if absent, evaluates it if present.")
-    argue_parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Show extra detail.",
-    )
+    argue_parser.add_argument("path", help="Plain document (.md). Extracts argument to <stem>.argument.md if absent.")
     argue_parser.add_argument(
         "-m", "--max-props",
         metavar="N",
@@ -624,12 +627,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Maximum total number of propositions passed to dianoia extract.",
     )
-    argue_parser.add_argument(
-        "step",
-        nargs="?",
-        default=None,
-        metavar="STEP",
-        help="Evaluate only this step and its direct justifiers (requires companion .argument.md).",
+
+    # analyze
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="Analyze a single argument (a proposition and its justifier chain) in a companion argument file, via dianoia.",
+    )
+    analyze_parser.add_argument("path", help="Document or companion .argument.md file.")
+    analyze_parser.add_argument(
+        "proposition",
+        type=int,
+        metavar="PROPOSITION",
+        help="Proposition number identifying the argument to analyze (that proposition and its justifier chain).",
+    )
+    analyze_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Show extra detail.",
     )
 
     return parser

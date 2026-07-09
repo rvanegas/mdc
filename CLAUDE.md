@@ -116,17 +116,31 @@ An optional `KEYS.md` in the library directory controls term canonicalization wi
 
 ## Companion Files
 
-Files without a secondary suffix (`YYYY-MM-DD-slug.md`) are standalone documents with no companions. A document can acquire up to two companions, each identified by a secondary suffix:
+Files without a secondary suffix (`YYYY-MM-DD-slug.md`) are standalone documents with no companions. A document can acquire up to three companions, each identified by a secondary suffix:
 
 | Suffix | Role |
 |---|---|
 | `.document.md` | The prose document being written/edited |
 | `.chat.md` | Chat transcript that drives `mdc reply`; companion `.document.md` and `.argument.md` files are auto-discovered by stem |
-| `.argument.md` | Extracted logical argument produced and evaluated by `mdc argue` |
+| `.argument.md` | A pure numbered list of propositions, extracted by `mdc argue` |
+| `.analysis.md` | Per-argument dianoia analysis, produced by `mdc analyze <doc> <proposition>`; never hand-edited |
 
-All three share the same date-slug stem: `YYYY-MM-DD-slug.{suffix}.md`.
+All four share the same date-slug stem: `YYYY-MM-DD-slug.{suffix}.md`.
 
-The library indexer indexes bare `*.md` files and `*.document.md` files. Chat and argument companions (`.chat.md`, `.argument.md`) are excluded.
+The library indexer indexes bare `*.md` files and `*.document.md` files. Chat, argument, and analysis companions (`.chat.md`, `.argument.md`, `.analysis.md`) are excluded.
+
+### Argument files
+
+`.argument.md` files contain exactly one section, `## Argument`, a list of propositions:
+
+```
+## Argument
+- 1: premise text
+- 2 (from: 1): premise text
+- 3 (from: 1, 2): conclusion text
+```
+
+Proposition numbers are a strict integer succession starting at 1 with no gaps, and are never renumbered once assigned (`validate_proposition_numbering` in `argue.py` enforces this on every AI-driven edit). A proposition with justifiers (a `(from: ...)` clause) is an "argument" — its justifiers are premises, itself the conclusion. `mdc analyze <doc> <proposition>` submits one argument's chain to dianoia and writes the result to `<stem>.analysis.md`, labeling it with a letter (A, B, C, …, Z, AA, …) following Roxana's convention exactly: computed from the proposition's ascending position among all justified propositions, never persisted (`assign_argument_labels` / `_to_alpha_index` in `argue.py`).
 
 ## Writing Assistant
 

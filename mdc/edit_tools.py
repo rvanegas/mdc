@@ -8,13 +8,6 @@ from pathlib import Path
 
 from mdc.transcript import TranscriptError
 
-_PKG = Path(__file__).parent
-_LOGIC_GRAMMAR = "\n\n".join(
-    p.read_text(encoding="utf-8")
-    for name in ("LOGIC-ASCII.md", "LOGIC-JSON.md")
-    if (p := _PKG / name).is_file()
-)
-
 EDIT_TOOL: dict[str, object] = {
     "name": "edit_file",
     "description": (
@@ -27,9 +20,8 @@ EDIT_TOOL: dict[str, object] = {
             "path": {
                 "type": "string",
                 "description": (
-                    "Filename of the companion file. For argument files, only "
-                    "Definitions and Argument sections are editable; "
-                    "evaluation sections are dianoia output and cannot be edited."
+                    "Filename of the companion file. An argument file's only "
+                    "content is its ## Argument proposition list."
                 ),
             },
             "old_str": {"type": "string", "description": "Exact text to replace"},
@@ -49,37 +41,32 @@ After editing, briefly describe what you changed (one or two sentences).\
 _ARGUMENT_FORMAT = """\
 ## Argument file format
 
-The user writes the propositions and formalizations. Your role is to help \
-keep everything correctly structured and consistently named — not to supply \
-logical content independently.
+The user writes the propositions. Your role is to help keep them correctly \
+structured and consistently numbered — not to supply logical content \
+independently.
 
-**## Definitions** (optional)
-- PREDICATE = semantic description   (uppercase symbol → predicate)
-- constant = semantic description    (lowercase symbol → constant)
-Keep this section in sync with the formalizations: if the user introduces a \
-new predicate or constant in a sub-bullet, add it here. If a symbol is \
-removed from all formalizations, remove it from Definitions.
+The file contains exactly one section:
 
-**## Argument**  (one line per premise; later steps may reference earlier ones as justifiers)
-- A: proposition text
-  - formalization in ASCII logic     (indented two-space sub-bullet)
-- B (from: A): proposition text
-  - formalization in ASCII logic
+**## Argument**  (one line per proposition; later propositions may cite \
+earlier ones as justifiers)
+- 1: premise text
+- 2 (from: 1): proposition text, justified by proposition 1
+- 3 (from: 1, 2): conclusion text, justified by propositions 1 and 2
 
-**## Formal evaluation**, **## Content evaluation**, **## Improvement recommendations**
-These sections are generated exclusively by dianoia via `mdc argue`. \
-Do not edit them. Read them as context to understand the current evaluation \
-state of the argument, then focus edits on Definitions and Argument only.
+Nothing else belongs in this file — no definitions, no formalizations, no \
+evaluation content. Analysis is generated separately by `mdc analyze` into \
+a companion `.analysis.md` file, which you never edit.
 
-Formalization sub-bullets are always indented with exactly two spaces. \
-When the user asks you to fix or write a formalization, use only the ASCII \
-grammar specified below and ensure the symbol names match ## Definitions.
+A proposition with justifiers is an "argument" in the sense used by `mdc \
+analyze`; a bare proposition with no justifiers is just a premise.
 
 **Proposition numbering rules**
 - Never renumber existing propositions. Their numbers are stable identifiers \
 referenced by justifier lists and external notes.
 - When adding a new proposition, assign the next integer after the current \
 highest number in the file, regardless of where in the argument it appears.
+- Proposition numbers must form a contiguous sequence starting at 1, with no \
+gaps.
 - Proposition numbers are plain integers only. No subscripts, primes, \
 apostrophes, asterisks, or other decorations (e.g. use `4`, not `3a`, `3'`, \
 or `3*`).\
@@ -132,8 +119,6 @@ def build_edit_context(targets: list[Path], wrap_width: int = 100, revisions_dir
     parts += [_EDIT_INSTRUCTIONS, ""]
     if has_argument:
         parts += [_ARGUMENT_FORMAT, ""]
-        if _LOGIC_GRAMMAR:
-            parts += ["## Logic grammar", _LOGIC_GRAMMAR, ""]
 
     for t in targets:
         raw = t.read_text(encoding="utf-8")

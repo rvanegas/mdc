@@ -6,9 +6,54 @@ import re
 
 
 _ARGUMENT_RE = re.compile(r"^- (\d+)(?:\s+\(from:\s*([\d,\s]+)\))?\s*:\s+(.+)$")
-_DEFINITION_RE = re.compile(r"^- ([A-Za-z][A-Za-z0-9]*(?:/\d+)?)\s*=\s*(.+)$")
 _PROP_SYMBOL_RE = re.compile(r"^- (\d+)[\s:(]")
 _DECORATED_PROP_RE = re.compile(r"^- (\d[\w'*]*)[\s:(]")
+
+
+def _read_title_date(text: str) -> tuple[str, str]:
+    """Extract title and date from the first few lines of an mdc preamble."""
+    lines = text.splitlines()
+    title: str | None = None
+    date_str: str | None = None
+    for line in lines[:6]:
+        line = line.strip()
+        if line.startswith("# ") and title is None:
+            title = line[2:].strip()
+        elif re.match(r"^\d{4}-\d{2}-\d{2}$", line) and date_str is None:
+            date_str = line
+        if title and date_str:
+            break
+    if not title:
+        raise ValueError("could not find '# Title' in preamble")
+    if not date_str:
+        raise ValueError("could not find date line in preamble")
+    return title, date_str
+
+
+def _to_alpha_index(n: int) -> str:
+    """Convert a 0-based index to a base-26 letter label: 0->A, 25->Z, 26->AA, ...
+
+    Direct port of Roxana's toAlphaIndex (~/src/roxana/src/app/util.tsx).
+    """
+    base = ord("A")
+    letters: list[str] = []
+    while n >= 0:
+        n, remainder = divmod(n, 26)
+        letters.append(chr(base + remainder))
+        n -= 1
+    return "".join(reversed(letters))
+
+
+def assign_argument_labels(argument: list[dict]) -> dict[str, str]:
+    """Map each justified proposition's symbol to a Roxana-style letter label.
+
+    Only propositions with at least one justifier are "arguments" in Roxana's
+    sense (premises -> conclusion); labels are assigned in ascending order of
+    proposition number, matching the "ordered according to the proposition
+    being argued for" rule. Labels are computed on demand, never persisted.
+    """
+    justified = sorted(int(s["symbol"]) for s in argument if s.get("justifiers"))
+    return {str(sym): _to_alpha_index(i) for i, sym in enumerate(justified)}
 
 
 def argument_to_markdown(args_dict: dict, title: str, date_str: str) -> str:
@@ -25,24 +70,8 @@ def argument_to_markdown(args_dict: dict, title: str, date_str: str) -> str:
     if not argument:
         raise ValueError("argument must have at least one step")
 
-    lines = ["", f"# {title}", date_str, ""]
-
-    definitions = args_dict.get("definitions")
-    if definitions:
-        predicates = definitions.get("predicates", [])
-        constants = definitions.get("constants", [])
-        if predicates or constants:
-            lines.append("## Definitions")
-            for c in constants:
-                lines.append(f"- {c.get('symbol', '?')} = {c.get('value', '')}")
-            for p in predicates:
-                sym = p.get('symbol', '?')
-                arity = p.get('arity', 0)
-                label = f"{sym}/{arity}" if arity else sym
-                lines.append(f"- {label} = {p.get('value', '')}")
-            lines.append("")
-
-    lines.append("## Argument")
+    lines = ["", f"# {title}", date_str, "", "## Argument"]
+    symbols: list[int] = []
     for step in argument:
         symbol = step.get("symbol", "")
         prop = step.get("proposition", "")
@@ -51,81 +80,25 @@ def argument_to_markdown(args_dict: dict, title: str, date_str: str) -> str:
             raise ValueError(f"argument step missing symbol or proposition: {step!r}")
         from_clause = f" (from: {', '.join(justifiers)})" if justifiers else ""
         lines.append(f"- {symbol}{from_clause}: {prop}")
-        _append_formalization_bullet(lines, step)
+        symbols.append(int(symbol))
     lines.append("")
+
+    err = _check_full_sequence(set(symbols))
+    if err:
+        raise ValueError(err)
 
     return "\n".join(lines)
 
 
-def _append_formalization_bullet(lines: list, step: dict) -> None:
-    form = step.get("formalization") or {}
-    if form.get("endorsed") and form.get("ascii"):
-        lines.append(f"  - {form['ascii']}")
-
-
-def inject_formalizations(text: str, by_symbol: dict) -> str:
-    """Add formalization sub-bullets in ## Argument.
-
-    Existing sub-bullets are dropped and re-emitted from by_symbol. The
-    caller is responsible for ensuring by_symbol already reflects any endorsed
-    formalizations, so nothing is lost.
-    """
-    lines = text.splitlines()
-    result = []
-    in_target = False
-    last_symbol: str | None = None
-
-    def flush() -> None:
-        if in_target and last_symbol is not None and last_symbol in by_symbol:
-            result.append(f"  - {by_symbol[last_symbol]}")
-
-    for line in lines:
-        stripped = line.strip()
-
-        if stripped == "## Argument":
-            flush()
-            in_target = True
-            last_symbol = None
-            result.append(line)
-            continue
-
-        if stripped.startswith("## "):
-            flush()
-            in_target = False
-            last_symbol = None
-            result.append(line)
-            continue
-
-        if in_target:
-            if line.startswith("  - "):
-                # Drop existing sub-bullet; flush() will re-emit it
-                continue
-
-            m = _PROP_SYMBOL_RE.match(stripped)
-            if m:
-                flush()
-                last_symbol = m.group(1)
-                result.append(line)
-                continue
-
-            # Any other line (blank, non-prop) — flush pending sub-bullet first
-            flush()
-            last_symbol = None
-
-        result.append(line)
-
-    flush()
-    return "\n".join(result)
-
-
-_CORE_SECTIONS = {"Definitions", "Argument"}
+_CORE_SECTIONS = {"Argument"}
 
 
 def extract_core_sections(text: str) -> str:
-    """Return only the preamble and the core sections of an argument file.
+    """Return only the preamble and the core ## Argument section.
 
-    Discards ## Formal evaluation, ## Content evaluation,
-    ## Improvement recommendations, and any other unknown sections.
+    Raises ValueError if any other section (e.g. a legacy ## Definitions or
+    evaluation section) is present — argument files must contain nothing but
+    the proposition list.
     """
     # Split on ## headings, keeping the delimiters
     parts = re.split(r"(?=^## )", text, flags=re.MULTILINE)
@@ -137,6 +110,11 @@ def extract_core_sections(text: str) -> str:
             kept.append(part)
         elif m.group(1) in _CORE_SECTIONS:
             kept.append(part)
+        else:
+            raise ValueError(
+                f"Unexpected section '## {m.group(1)}' in argument file. "
+                "Argument files must contain only a ## Argument section."
+            )
     return "".join(kept)
 
 
@@ -149,91 +127,43 @@ def markdown_to_argument(text: str) -> dict:
     text = extract_core_sections(text)
 
     argument: list[dict] = []
-    definitions: dict = {"predicates": [], "constants": []}
     current_section: str | None = None
-    pending_step: dict | None = None
-    pending_list: list | None = None
-
-    def finalize() -> None:
-        nonlocal pending_step
-        if pending_step is not None and pending_list is not None:
-            pending_list.append(pending_step)
-            pending_step = None
 
     for lineno, raw_line in enumerate(text.splitlines(), 1):
         line = raw_line.strip()
 
         if line == "## Argument":
-            finalize()
             current_section = "argument"
-            pending_list = argument
-            continue
-        if line == "## Definitions":
-            finalize()
-            current_section = "definitions"
-            pending_list = None
             continue
         if line.startswith("## "):
-            finalize()
             current_section = None
-            pending_list = None
             continue
 
         if not line or line.startswith("#"):
             continue
 
-        # Formalization sub-bullet under a pending proposition
-        if current_section == "argument" and raw_line.startswith("  - "):
-            if pending_step is not None:
-                ascii_form = raw_line[4:].strip()
-                if ascii_form:
-                    pending_step["formalization"] = {
-                        "ascii": ascii_form,
-                        "json_structure": None,
-                        "endorsed": True,
-                    }
-            continue
-
         if current_section == "argument" and line.startswith("- "):
-            finalize()
             m = _ARGUMENT_RE.match(line)
             if not m:
                 raise ValueError(f"line {lineno}: cannot parse argument step: {raw_line!r}")
             justifiers_raw = m.group(2)
-            pending_step = {
+            argument.append({
                 "symbol": m.group(1),
                 "proposition": m.group(3).strip(),
                 "justifiers": (
                     [j.strip() for j in justifiers_raw.split(",") if j.strip()]
                     if justifiers_raw else []
                 ),
+                # required by dianoia's Step wire schema; not part of mdc's own
+                # format and never round-tripped through argument_to_markdown
                 "truth_score": "",
-            }
+            })
             continue
-
-        if current_section == "definitions" and line.startswith("- "):
-            m = _DEFINITION_RE.match(line)
-            if m:
-                raw_sym, value = m.group(1), m.group(2).strip()
-                if "/" in raw_sym:
-                    sym, arity_str = raw_sym.split("/", 1)
-                    arity = int(arity_str)
-                else:
-                    sym, arity = raw_sym, 0
-                if sym[0].isupper():
-                    definitions["predicates"].append({"symbol": sym, "value": value, "arity": arity})
-                else:
-                    definitions["constants"].append({"symbol": sym, "value": value})
-
-    finalize()
 
     if not argument:
         raise ValueError("no argument steps found in file")
 
-    result: dict = {"argument": argument}
-    if definitions["predicates"] or definitions["constants"]:
-        result["definitions"] = definitions
-    return result
+    return {"argument": argument}
 
 
 def _prop_numbers_in_sections(text: str) -> tuple[set[int], list[str]]:
@@ -255,6 +185,18 @@ def _prop_numbers_in_sections(text: str) -> tuple[set[int], list[str]]:
             elif _DECORATED_PROP_RE.match(stripped):
                 decorated.append(_DECORATED_PROP_RE.match(stripped).group(1))
     return numbers, decorated
+
+
+def _check_full_sequence(nums: set[int]) -> str | None:
+    """Return an error message if nums isn't a contiguous 1..N sequence, else None."""
+    expected = set(range(1, len(nums) + 1))
+    if nums != expected:
+        missing = sorted(expected - nums)
+        return (
+            f"Proposition numbers must be a contiguous sequence starting at 1 "
+            f"with no gaps (missing: {missing})."
+        )
+    return None
 
 
 def validate_proposition_numbering(old_text: str, new_text: str) -> str | None:
@@ -285,4 +227,4 @@ def validate_proposition_numbering(old_text: str, new_text: str) -> str | None:
                 f"(current max: {max_old}). New propositions must be numbered after the maximum."
             )
 
-    return None
+    return _check_full_sequence(new_nums)
