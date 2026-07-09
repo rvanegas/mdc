@@ -7,6 +7,7 @@ from pathlib import Path
 
 from mdc.assets import build_anthropic_input, build_chat_input, build_response_input, collect_local_assets
 from mdc.config import _default_assistant_name, load_config
+from mdc.edit_tools import create_document_file
 from mdc.form import fix_section_spacing
 from mdc.transcript import (
     TranscriptError,
@@ -559,6 +560,10 @@ def run_reply(
     chat = path.with_suffix(".chat.md")
     if chat.exists():
         path = chat
+    elif edit and len(path.suffixes) == 1:
+        # Edit mode operates on .chat.md files; promote the bare transcript.
+        print(f"Renaming '{path.name}' to '{chat.name}'.")
+        path = path.rename(chat)
 
     if watch:
         return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort, verbose=verbose, web_search=web_search, library_path=library_path)
@@ -586,6 +591,12 @@ def run_reply(
     if not transcript.pending:
         print("No pending human turn found. Nothing to do.")
         return 1
+
+    if edit:
+        document = path.with_suffix("").with_suffix(".document.md")
+        if not document.exists():
+            create_document_file(document, transcript.preamble.title, transcript.preamble.date)
+            print(f"Created '{document.name}'.")
 
     if effective_model.startswith("claude-"):
         try:

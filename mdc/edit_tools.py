@@ -84,6 +84,11 @@ coherence.\
 _BACKUP_RE = re.compile(r"^(.+)--(\d+)(\.[^.]+)$")
 
 
+def create_document_file(path: Path, title: str, date: str) -> None:
+    """Write a fresh .document.md containing only the preamble (title + date)."""
+    path.write_text(f"\n# {title}\n{date}\n\n", encoding="utf-8")
+
+
 def resolve_edit_targets(chat_path: Path) -> list[Path]:
     """Return companion .document.md and .argument.md files for a .chat.md transcript.
 

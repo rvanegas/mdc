@@ -13,6 +13,7 @@ from mdc.config import load_config
 from mdc.form import check_file, check_global_issues, fix_exported_chat, fix_object_replacement, fix_rtl_spans, fix_section_spacing, fix_title_section, slugify
 from mdc.transcript import TranscriptError, parse_transcript
 from mdc.assets import collect_local_assets
+from mdc.edit_tools import create_document_file
 
 from mdc.cmd_diff import run_diff, run_files_ls
 from mdc.cmd_argue import run_argue
@@ -719,7 +720,7 @@ def run_new(title: str | None, edit: bool = False, library_path: Path | None = N
         if chat_path.exists():
             print(f"Error: '{chat_filename}' already exists.")
             return 1
-        document_path.write_text(f"\n# {title}\n{today}\n\n", encoding="utf-8")
+        create_document_file(document_path, title, today)
         chat_path.write_text(
             f"\n# {title}\n{today}\n\n## Prompt\n\n",
             encoding="utf-8",
