@@ -74,3 +74,89 @@ def test_audit_dianoia_error(argument_file, capsys):
         rc = run_audit(argument_file)
     assert rc == 1
     assert "dianoia audit failed" in capsys.readouterr().err
+
+
+FINDINGS_RESULT = {
+    "satisfied": False,
+    "findings": [{
+        "condition": "connectivity",
+        "step_symbols": ["1"],
+        "issue": "Step supports nothing.",
+        "pointer": "Cite step 1 in a later step or remove it.",
+    }],
+}
+
+
+def _analysis_path(argument_file: Path) -> Path:
+    return argument_file.with_suffix("").with_suffix(".analysis.md")
+
+
+def test_audit_persisted_to_analysis_file(argument_file, capsys):
+    with patch("mdc.dianoia_client.audit", return_value=FINDINGS_RESULT):
+        run_audit(argument_file)
+    text = _analysis_path(argument_file).read_text(encoding="utf-8")
+    assert "# Sample Argument" in text
+    assert "2026-07-08" in text
+    assert "## Audit" in text
+    assert ("- connectivity [1]: Step supports nothing. — "
+            "Cite step 1 in a later step or remove it.") in text
+    assert "written to" in capsys.readouterr().out
+
+
+def test_audit_satisfied_persisted(argument_file):
+    with patch("mdc.dianoia_client.audit",
+               return_value={"satisfied": True, "findings": []}):
+        run_audit(argument_file)
+    text = _analysis_path(argument_file).read_text(encoding="utf-8")
+    assert "## Audit" in text
+    assert "- satisfied" in text
+
+
+def test_audit_preserves_existing_analysis_blocks(argument_file):
+    analysis = _analysis_path(argument_file)
+    analysis.write_text(
+        "\n# Sample Argument\n2026-07-08\n\n"
+        "## Argument A (proposition 3) — Analysis\n\n"
+        "### Truth\n\n- 1 truth: 0.9 — Solid.\n",
+        encoding="utf-8",
+    )
+    with patch("mdc.dianoia_client.audit", return_value=FINDINGS_RESULT):
+        run_audit(argument_file)
+    text = analysis.read_text(encoding="utf-8")
+    assert "## Audit" in text
+    assert "## Argument A (proposition 3) — Analysis" in text
+    assert "- 1 truth: 0.9 — Solid." in text
+    # Audit section comes before argument blocks.
+    assert text.index("## Audit") < text.index("## Argument A")
+
+
+def test_rerun_replaces_audit_section(argument_file):
+    with patch("mdc.dianoia_client.audit", return_value=FINDINGS_RESULT):
+        run_audit(argument_file)
+    with patch("mdc.dianoia_client.audit",
+               return_value={"satisfied": True, "findings": []}):
+        run_audit(argument_file)
+    text = _analysis_path(argument_file).read_text(encoding="utf-8")
+    assert text.count("## Audit") == 1
+    assert "- satisfied" in text
+    assert "connectivity" not in text
+
+
+def test_analyze_preserves_audit_section(argument_file):
+    from mdc.cmd_analyze import run_analyze
+
+    with patch("mdc.dianoia_client.audit", return_value=FINDINGS_RESULT):
+        run_audit(argument_file)
+
+    results = {"results_by_agent": {"truth_evaluator": [{"result_content": {
+        "truth_evaluations": [{"symbol": "1", "truth_value": 0.9, "reasoning": "Solid."}],
+    }}]}}
+    with patch("mdc.dianoia_client.evaluate", return_value=results):
+        assert run_analyze(argument_file, 3) == 0
+
+    text = _analysis_path(argument_file).read_text(encoding="utf-8")
+    assert "## Audit" in text
+    assert "connectivity [1]" in text
+    assert "(proposition 3) — Analysis" in text
+    assert "- 1 truth: 0.9 — Solid." in text
+    assert text.index("## Audit") < text.index("(proposition 3)")

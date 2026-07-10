@@ -104,6 +104,7 @@ class FakeRoxana:
 
     def create_discussion(self, url, api_key, discussion_id, layout, analysis_results=None):
         self.calls.append(("discussion", discussion_id, layout))
+        self.analysis_results = analysis_results
 
     def delete_sentence(self, url, api_key, sentence_id):
         self.calls.append(("delete", sentence_id))
@@ -156,6 +157,67 @@ def test_export_flow(argument_file, configured, capsys):
     out = capsys.readouterr().out
     assert "4 propositions, 2 arguments" in out
     assert "https://roxana.example/discussions/k2rw" in out
+    assert fake.analysis_results is None
+
+
+ANALYSIS_TEXT = """
+# Sample Argument
+2026-07-08
+
+## Audit
+
+- satisfied
+
+## Argument A (proposition 3) — Analysis
+
+### Truth
+
+- 1 truth: 0.9 — Solid.
+
+## Argument B (proposition 4) — Analysis
+
+### Formal validity
+
+- 4 validity: 1 — Follows.
+- argument validity: 1
+"""
+
+
+@pytest.fixture
+def analysis_file(argument_file: Path) -> Path:
+    analysis = argument_file.with_suffix("").with_suffix(".analysis.md")
+    analysis.write_text(ANALYSIS_TEXT, encoding="utf-8")
+    return analysis
+
+
+def test_export_maps_analyses_to_argument_positions(argument_file, analysis_file, configured):
+    fake = FakeRoxana()
+    assert _run_with(fake, argument_file) == 0
+
+    results = json.loads(fake.analysis_results)
+    # Proposition 3 is argument position 1, proposition 4 is position 2
+    # (justified propositions ordered by ascending conclusion symbol).
+    assert set(results) == {"1", "2"}
+    assert results["1"]["truthEvaluations"] == [
+        {"symbol": "1", "truth_value": 0.9, "reasoning": "Solid."},
+    ]
+    assert results["2"]["argumentValidity"] == 1
+    assert results["2"]["propositionEvaluations"] == [
+        {"symbol": "4", "validity": 1, "reasoning": "Follows."},
+    ]
+
+
+def test_export_summary_counts_analyses(argument_file, analysis_file, configured, capsys):
+    fake = FakeRoxana()
+    assert _run_with(fake, argument_file) == 0
+    assert "2 analyses" in capsys.readouterr().out
+
+
+def test_dry_run_lists_analysis_positions(argument_file, analysis_file, capsys):
+    with patch("mdc.roxana_client._graphql") as graphql:
+        assert run_export(argument_file, dry_run=True) == 0
+        graphql.assert_not_called()
+    assert "Analyses: positions 1, 2" in capsys.readouterr().out
 
 
 def test_cleanup_on_midflight_failure(argument_file, configured, capsys):
