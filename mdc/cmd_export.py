@@ -32,6 +32,31 @@ def _argument_contents(argument: list[dict]) -> list[str]:
     return [" ".join([*s["justifiers"], s["symbol"]]) for s in justified]
 
 
+def _analysis_results(companion: Path, argument: list[dict]) -> dict[int, dict]:
+    """Parse the .analysis.md companion into Roxana's analysisResults shape.
+
+    Roxana keys analysisResults by 1-based argument position; mdc keys analysis
+    blocks by conclusion proposition number. Positions here MUST follow the same
+    ordering as _argument_contents (ascending conclusion symbol), which is also
+    the assign_argument_labels convention.
+    """
+    from mdc.analysis import parse_analysis_result
+    from mdc.cmd_analyze import _parse_analysis_blocks
+
+    analysis_path = companion.with_suffix("").with_suffix(".analysis.md")
+    if not analysis_path.exists():
+        return {}
+
+    blocks = _parse_analysis_blocks(analysis_path.read_text(encoding="utf-8"))
+    justified = sorted((s for s in argument if s.get("justifiers")),
+                       key=lambda s: int(s["symbol"]))
+    position_by_prop = {int(s["symbol"]): pos for pos, s in enumerate(justified, start=1)}
+
+    return {position_by_prop[prop_num]: parse_analysis_result(body)
+            for prop_num, body in blocks.items()
+            if prop_num in position_by_prop}
+
+
 def run_export(path: Path, dry_run: bool = False) -> int:
     from mdc.argue import markdown_to_argument
     from mdc.config import load_config
@@ -58,6 +83,7 @@ def run_export(path: Path, dry_run: bool = False) -> int:
     argument = args_dict["argument"]
     proposition_contents = [s["proposition"] for s in sorted(argument, key=lambda s: int(s["symbol"]))]
     argument_contents = _argument_contents(argument)
+    analysis_results = _analysis_results(companion, argument)
 
     if dry_run:
         print("Propositions:")
@@ -66,6 +92,8 @@ def run_export(path: Path, dry_run: bool = False) -> int:
         print("Arguments:")
         for i, content in enumerate(argument_contents, start=1):
             print(f"  {i}: {content}")
+        if analysis_results:
+            print(f"Analyses: positions {', '.join(str(p) for p in sorted(analysis_results))}")
         print("Dry run — nothing sent to Roxana.")
         return 0
 
@@ -97,7 +125,10 @@ def run_export(path: Path, dry_run: bool = False) -> int:
                 created_ids.append(sentence_id)
                 argument_entries.append(_layout_entry(index, sentence_id))
             layout = json.dumps({"propositions": proposition_entries, "arguments": argument_entries})
-            roxana_client.create_discussion(url, api_key, discussion_id, layout)
+            roxana_client.create_discussion(
+                url, api_key, discussion_id, layout,
+                analysis_results=json.dumps(analysis_results) if analysis_results else None,
+            )
         except RuntimeError:
             for sentence_id in created_ids:
                 try:
@@ -109,8 +140,9 @@ def run_export(path: Path, dry_run: bool = False) -> int:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
-    print(f"Exported {len(proposition_entries)} propositions, {len(argument_entries)} arguments "
-          f"to discussion {discussion_id}.")
+    exported_analyses = f", {len(analysis_results)} analyses" if analysis_results else ""
+    print(f"Exported {len(proposition_entries)} propositions, {len(argument_entries)} arguments"
+          f"{exported_analyses} to discussion {discussion_id}.")
     if config.roxana_web_url:
         print(f"{config.roxana_web_url.rstrip('/')}/discussions/{discussion_id}")
     return 0

@@ -56,6 +56,8 @@ def run_audit(path: Path) -> int:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
+    _save_audit(companion, argument_text, args_dict["argument"], result)
+
     findings = result.get("findings", [])
     if result.get("satisfied"):
         print("Argument satisfies all structural conditions.")
@@ -64,3 +66,23 @@ def run_audit(path: Path) -> int:
     print(f"{len(findings)} finding{'s' if len(findings) != 1 else ''}:\n")
     _print_findings(findings)
     return 1
+
+
+def _save_audit(companion: Path, argument_text: str, argument: list[dict], result: dict) -> None:
+    """Persist the audit as the ## Audit section of the .analysis.md companion."""
+    from mdc.analysis import render_audit_body
+    from mdc.argue import _read_title_date
+    from mdc.cmd_analyze import _parse_analysis_blocks, _write_analysis
+
+    try:
+        title, date_str = _read_title_date(argument_text)
+    except ValueError as e:
+        print(f"Warning: audit not saved: {e}", file=sys.stderr)
+        return
+
+    analysis_path = companion.with_suffix("").with_suffix(".analysis.md")
+    existing = analysis_path.read_text(encoding="utf-8") if analysis_path.exists() else ""
+    blocks = _parse_analysis_blocks(existing) if existing else {}
+
+    _write_analysis(analysis_path, title, date_str, argument, blocks, render_audit_body(result))
+    print(f"Audit written to {analysis_path.name}")

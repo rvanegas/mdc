@@ -102,7 +102,7 @@ class FakeRoxana:
         self.calls.append(("sentence", content, discussion_id, sentence_id))
         return sentence_id
 
-    def create_discussion(self, url, api_key, discussion_id, layout):
+    def create_discussion(self, url, api_key, discussion_id, layout, analysis_results=None):
         self.calls.append(("discussion", discussion_id, layout))
 
     def delete_sentence(self, url, api_key, sentence_id):

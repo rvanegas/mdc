@@ -57,18 +57,19 @@ def create_sentence(url: str, api_key: str, content: str, discussion_id: str) ->
     return data["createSentence"]["id"]
 
 
-def create_discussion(url: str, api_key: str, discussion_id: str, layout: str) -> None:
-    _graphql(
-        url, api_key, _CREATE_DISCUSSION,
-        {"input": {
-            "id": discussion_id,
-            "version": 2,
-            "revision": 1,
-            "isPrivate": False,
-            "layout": layout,
-            "pool": 1,
-        }},
-    )
+def create_discussion(url: str, api_key: str, discussion_id: str, layout: str,
+                      analysis_results: str | None = None) -> None:
+    input_: dict = {
+        "id": discussion_id,
+        "version": 2,
+        "revision": 1,
+        "isPrivate": False,
+        "layout": layout,
+        "pool": 1,
+    }
+    if analysis_results is not None:
+        input_["analysisResults"] = analysis_results
+    _graphql(url, api_key, _CREATE_DISCUSSION, {"input": input_})
 
 
 def delete_sentence(url: str, api_key: str, sentence_id: str) -> None:
