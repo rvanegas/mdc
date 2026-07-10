@@ -41,6 +41,20 @@ def _render_content_validity(rc: dict) -> list[str]:
     return lines
 
 
+def _render_phrasing(rc: dict) -> list[str]:
+    evaluations = rc.get("phrasing_evaluations", [])
+    if not evaluations:
+        return []
+    lines = ["### Phrasing", ""]
+    for item in sorted(evaluations, key=lambda x: x.get("symbol", "")):
+        sym = item.get("symbol", "?")
+        issues = "; ".join(item.get("issues", []))
+        recommendation = item.get("recommendation", "")
+        lines.append(f"- {sym}: {issues} — {recommendation}")
+    lines.append("")
+    return lines
+
+
 def _render_formalizations(rc: dict) -> list[str]:
     lines = ["### Formalizations", ""]
     for f in rc.get("formalizations", []):
@@ -104,18 +118,25 @@ def _render_recommendations(form_rc: dict, content_rc: dict, improver_results: l
 
 
 def _render_analysis_body(results: dict) -> str:
-    from mdc.dianoia_results import ContentEvalResult, FormalEvalResult, FormalizerResult
+    from mdc.dianoia_results import ContentEvalResult, FormalEvalResult, FormalizerResult, PhrasingEvalResult
 
     results_by_agent = results.get("results_by_agent", {})
 
     formalizer_rc = cast(FormalizerResult, next(iter(results_by_agent.get("formalizer", [])), {}).get("result_content", {}))
     form_rc = cast(FormalEvalResult, next(iter(results_by_agent.get("form_evaluator", [])), {}).get("result_content", {}))
-    content_rc = cast(ContentEvalResult, next(iter(results_by_agent.get("content_evaluator", [])), {}).get("result_content", {}))
+    # truth_evaluator and content_validity_evaluator carry disjoint fields
+    # (truth_evaluations/incoherent_sets vs validity_evaluations/logical_issues/
+    # recommendations); merge them into the shape ContentEvalResult describes
+    truth_rc = next(iter(results_by_agent.get("truth_evaluator", [])), {}).get("result_content", {})
+    cv_rc = next(iter(results_by_agent.get("content_validity_evaluator", [])), {}).get("result_content", {})
+    content_rc = cast(ContentEvalResult, {**truth_rc, **cv_rc})
+    phrasing_rc = cast(PhrasingEvalResult, next(iter(results_by_agent.get("phrasing_evaluator", [])), {}).get("result_content", {}))
     improver_results = results_by_agent.get("improver", [])
 
     lines: list[str] = []
     lines += _render_truth(content_rc)
     lines += _render_content_validity(content_rc)
+    lines += _render_phrasing(phrasing_rc)
     lines += _render_formalizations(formalizer_rc)
     lines += _render_formal_validity(form_rc)
     lines += _render_logical_issues(form_rc, content_rc)

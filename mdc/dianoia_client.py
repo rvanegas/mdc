@@ -50,6 +50,19 @@ def extract(text: str, max_props: int | None = None) -> dict:
         tmp.unlink(missing_ok=True)
 
 
+def audit(args: dict) -> dict:
+    """Call `dianoia audit` on an Arguments dict, return an AuditResult dict."""
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", encoding="utf-8", delete=False
+    ) as f:
+        json.dump(args, f)
+        tmp = Path(f.name)
+    try:
+        return _run(["audit"], tmp)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def evaluate(args: dict, step: str | None = None) -> dict:
     """Call `dianoia evaluate` on an Arguments dict, return results dict.
 

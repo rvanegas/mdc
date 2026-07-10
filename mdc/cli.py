@@ -18,6 +18,7 @@ from mdc.edit_tools import create_document_file
 from mdc.cmd_diff import run_diff, run_files_ls
 from mdc.cmd_argue import run_argue
 from mdc.cmd_analyze import run_analyze
+from mdc.cmd_audit import run_audit
 from mdc.cmd_export import run_export
 from mdc.cmd_pdf import run_pdf
 from mdc.cmd_index import run_index
@@ -284,6 +285,13 @@ def main(argv: list[str] | None = None) -> int:
             if path is None:
                 return 1
             return run_analyze(path, args.proposition, verbose=args.verbose)
+        if args.command == "audit":
+            if _require_bare(args.path):
+                return 1
+            path = _resolve_path_abbrev(args.path, Path.cwd(), secondary_priority=("argument", "document"))
+            if path is None:
+                return 1
+            return run_audit(path)
         if args.command == "export":
             if _require_bare(args.path):
                 return 1
@@ -654,6 +662,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show extra detail.",
     )
+
+    # audit
+    audit_parser = subparsers.add_parser(
+        "audit",
+        help="Audit a companion argument file against the structural conditions, via dianoia.",
+    )
+    audit_parser.add_argument("path", help="Document or companion .argument.md file.")
 
     # export
     export_parser = subparsers.add_parser(

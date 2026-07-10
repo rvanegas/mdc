@@ -68,6 +68,16 @@ class IncoherentSet(TypedDict):
     incoherence_value: float
 
 
+class PhrasingEvaluation(TypedDict):
+    symbol: str
+    issues: list[str]
+    recommendation: str
+
+
+class PhrasingEvalResult(TypedDict):
+    phrasing_evaluations: list[PhrasingEvaluation]
+
+
 class ContentEvalResult(TypedDict):
     truth_evaluations: list[TruthEvaluation]
     validity_evaluations: list[ContentValidityEvaluation]
