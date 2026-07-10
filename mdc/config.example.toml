@@ -32,3 +32,14 @@ llm_names = ["Claude", "GPT"]
 
 # Ollama endpoint. Default shown.
 # ollama_base_url = "http://localhost:11434/v1"
+
+# --- Roxana ---
+
+# AppSync endpoint and API key used by "mdc export". Values come from the roxana
+# repo's .env.local (VITE_APPSYNC_ENDPOINT, VITE_APPSYNC_API_KEY). Can also be set
+# via ROXANA_API_URL / ROXANA_API_KEY environment variables.
+# roxana_api_url = "https://....appsync-api.us-west-2.amazonaws.com/graphql"
+# roxana_api_key = "da2-..."
+
+# Web app base URL, used to print a link to the exported discussion.
+# roxana_web_url = "https://..."

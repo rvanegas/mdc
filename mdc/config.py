@@ -62,6 +62,9 @@ class AppConfig:
     llm_names: tuple[str, ...] = ("Claude", "GPT")
     wrap_width: int = 100
     revision_retention_days: int = 7
+    roxana_api_url: str | None = None
+    roxana_api_key: str | None = None
+    roxana_web_url: str | None = None
 
 
 def _write_default_config(path: Path) -> None:
@@ -110,6 +113,10 @@ def load_config() -> AppConfig:
     wrap_width = int(data.get("wrap_width", 100))
     revision_retention_days = int(data.get("revision_retention_days", 7))
 
+    roxana_api_url = str(data.get("roxana_api_url", "")).strip() or os.environ.get("ROXANA_API_URL", "").strip() or None
+    roxana_api_key = str(data.get("roxana_api_key", "")).strip() or os.environ.get("ROXANA_API_KEY", "").strip() or None
+    roxana_web_url = str(data.get("roxana_web_url", "")).strip() or None
+
     return AppConfig(
         model=model,
         system_prompt=system_prompt,
@@ -122,6 +129,9 @@ def load_config() -> AppConfig:
         llm_names=llm_names,
         wrap_width=wrap_width,
         revision_retention_days=revision_retention_days,
+        roxana_api_url=roxana_api_url,
+        roxana_api_key=roxana_api_key,
+        roxana_web_url=roxana_web_url,
     )
 
 
