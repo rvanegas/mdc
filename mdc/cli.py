@@ -246,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
                 library=args.library,
                 terms=args.terms,
                 strict=args.strict,
-                web_search=args.web_search,
+                web=args.web,
                 library_path=args.lib,
                 edit=args.edit,
             )
@@ -554,10 +554,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Abort if any library term lookup fails (default: warn and proceed).",
     )
     reply_parser.add_argument(
-        "-w", "--web-search",
+        "-w", "--web",
         action="store_true",
         default=False,
-        help="Enable Anthropic web search (server-side tool).",
+        help="Enable Anthropic web search and fetch (server-side tools).",
     )
     reply_parser.add_argument(
         "-e", "--edit",

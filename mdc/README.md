@@ -117,7 +117,7 @@ mdc reply -v -l -t "sorting algorithms" conversation.md
 | `-r`, `--reasoning-effort` | `none` / `low` / `medium` / `high` / `xhigh`. Default: `low`. |
 | `-v`, `--verbose` | Print progress messages and token usage / cost. |
 | `-W`, `--watch` | Poll the transcript once per second and reply whenever a pending turn appears. Useful when editing in another window. |
-| `-w`, `--web-search` | Enable Anthropic server-side web search. |
+| `-w`, `--web` | Enable Anthropic server-side web search and fetch. |
 | `-l`, `--library` | Give the model access to the library index tools (`lookup_term`, `read_document`). Requires `library_path` in config. |
 | `-t`, `--term TERM` | Pre-look up a library index term and inject the results into context before the model runs. Requires `-l`. May be repeated. |
 | `--strict` | Abort if any `-t` term is not found in the index (default: warn and proceed). |

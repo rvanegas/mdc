@@ -171,7 +171,7 @@ def _reply_anthropic(
     library: bool = False,
     terms: list[str] | None = None,
     strict: bool = False,
-    web_search: bool = False,
+    web: bool = False,
     library_path: str | None = None,
     edit: bool = False,
 ) -> str:
@@ -295,9 +295,12 @@ def _reply_anthropic(
         for t in edit_targets:
             status(f"Edit target: {t.name}")
 
-    if web_search:
-        tools = (tools or []) + [{"type": "web_search_20260209", "name": "web_search"}]
-        status("Web search enabled.")
+    if web:
+        tools = (tools or []) + [
+            {"type": "web_search_20260209", "name": "web_search"},
+            {"type": "web_fetch_20260309", "name": "web_fetch", "max_content_tokens": 50000},
+        ]
+        status("Web search and fetch enabled.")
 
     lib_titles: dict[str, str] = {}
     if library and config.library_path:
@@ -483,7 +486,7 @@ def _run_reply_watch(
     model: str | None = None,
     reasoning_effort: str | None = None,
     verbose: bool = False,
-    web_search: bool = False,
+    web: bool = False,
     library_path: str | None = None,
 ) -> int:
     config = load_config()
@@ -514,7 +517,7 @@ def _run_reply_watch(
                 reply_text = _reply_anthropic(transcript, config, path, effective_model,
                                               reasoning_effort=reasoning_effort,
                                               verbose=verbose, status=noop,
-                                              web_search=web_search)
+                                              web=web)
             elif effective_model.startswith("ollama/"):
                 reply_text = _reply_ollama(transcript, config, path, effective_model,
                                            verbose=verbose, status=noop)
@@ -548,7 +551,7 @@ def run_reply(
     library: bool = False,
     terms: list[str] | None = None,
     strict: bool = False,
-    web_search: bool = False,
+    web: bool = False,
     library_path: str | None = None,
     edit: bool = False,
 ) -> int:
@@ -566,7 +569,7 @@ def run_reply(
         path = path.rename(chat)
 
     if watch:
-        return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort, verbose=verbose, web_search=web_search, library_path=library_path)
+        return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort, verbose=verbose, web=web, library_path=library_path)
 
     def status(msg: str) -> None:
         if verbose:
@@ -608,7 +611,7 @@ def run_reply(
                 library=library,
                 terms=terms or [],
                 strict=strict,
-                web_search=web_search,
+                web=web,
                 library_path=library_path,
                 edit=edit,
             )

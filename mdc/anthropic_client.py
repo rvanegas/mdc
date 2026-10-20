@@ -45,6 +45,7 @@ def _thinking_params(
 _BLOCK_KEEP: dict[str, frozenset[str]] = {
     "server_tool_use": frozenset({"type", "id", "name", "input", "caller", "cache_control"}),
     "web_search_tool_result": frozenset({"type", "tool_use_id", "content", "caller", "cache_control"}),
+    "web_fetch_tool_result": frozenset({"type", "tool_use_id", "content", "caller", "cache_control"}),
     "code_execution_tool_result": frozenset({"type", "tool_use_id", "content", "cache_control"}),
     "bash_code_execution_tool_result": frozenset({"type", "tool_use_id", "content", "cache_control"}),
 }
