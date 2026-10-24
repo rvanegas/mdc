@@ -65,6 +65,8 @@ class AppConfig:
     roxana_api_url: str | None = None
     roxana_api_key: str | None = None
     roxana_web_url: str | None = None
+    dianoia_api_url: str | None = None
+    dianoia_token: str | None = None
 
 
 def _write_default_config(path: Path) -> None:
@@ -117,6 +119,9 @@ def load_config() -> AppConfig:
     roxana_api_key = str(data.get("roxana_api_key", "")).strip() or os.environ.get("ROXANA_API_KEY", "").strip() or None
     roxana_web_url = str(data.get("roxana_web_url", "")).strip() or None
 
+    dianoia_api_url = str(data.get("dianoia_api_url", "")).strip() or os.environ.get("DIANOIA_API_URL", "").strip() or None
+    dianoia_token = str(data.get("dianoia_token", "")).strip() or os.environ.get("DIANOIA_TOKEN", "").strip() or None
+
     return AppConfig(
         model=model,
         system_prompt=system_prompt,
@@ -132,6 +137,8 @@ def load_config() -> AppConfig:
         roxana_api_url=roxana_api_url,
         roxana_api_key=roxana_api_key,
         roxana_web_url=roxana_web_url,
+        dianoia_api_url=dianoia_api_url,
+        dianoia_token=dianoia_token,
     )
 
 

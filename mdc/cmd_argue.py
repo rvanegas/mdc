@@ -76,7 +76,7 @@ def run_argue(path: Path, max_props: int | None = None) -> int:
     print("Extracting argument…")
     try:
         args_dict = dianoia_client.extract(text, max_props=max_props)
-    except (FileNotFoundError, RuntimeError) as e:
+    except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     try:

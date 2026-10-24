@@ -217,7 +217,7 @@ mdc edit conversation.md
 
 ### `mdc argue`
 
-Extract a structured logical argument from a plain document, or evaluate a companion argument file via the dianoia tool.
+Extract a structured logical argument from a plain document, or evaluate a companion argument file via the dianoia API.
 
 ```bash
 mdc argue essay.md              # extract argument → essay.argument.md

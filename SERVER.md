@@ -67,9 +67,8 @@ waits for `commons` so mdc moves only once.
   - `POST /argument/evaluate` `{argument}` → starts the agents
     (`coordinator.react_to_user_argument_change`, as `cli/argue.py:cmd_evaluate`
     does) and returns `{conversation_id, snapshot_id}`. The client polls the
-    existing `GET /agents/results` and `/agents/active`. Check that these
-    report completion the way `coordinator.are_conversation_tasks_complete`
-    does; if not, add a `complete` field to `/agents/results`.
+    existing `GET /agents/results`, whose `tasks_complete` comes from the same
+    `coordinator.are_conversation_tasks_complete` the CLI checks.
 - **A service token now, not in SITE Phase 4.** The new routes spend model
   tokens, so they require `Authorization: Bearer <token>`, checked by a FastAPI
   dependency against `MDC_TOKEN` in dianoia's `.env`. SITE Phase 4 extends the

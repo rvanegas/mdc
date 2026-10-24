@@ -33,6 +33,14 @@ llm_names = ["Claude", "GPT"]
 # Ollama endpoint. Default shown.
 # ollama_base_url = "http://localhost:11434/v1"
 
+# --- Dianoia ---
+
+# API base URL and service token used by "mdc argue", "mdc analyze" and "mdc audit".
+# The token is dianoia's MDC_TOKEN. Can also be set via DIANOIA_API_URL /
+# DIANOIA_TOKEN environment variables.
+# dianoia_api_url = "https://dianoia.rvanegas.com/api"
+# dianoia_token = "..."
+
 # --- Roxana ---
 
 # AppSync endpoint and API key used by "mdc export". Values come from the roxana

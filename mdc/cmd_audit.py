@@ -52,7 +52,7 @@ def run_audit(path: Path) -> int:
     print(f"Auditing {companion.name}…")
     try:
         result = dianoia_client.audit(args_dict)
-    except (FileNotFoundError, RuntimeError) as e:
+    except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 

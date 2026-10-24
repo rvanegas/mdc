@@ -93,7 +93,7 @@ def run_analyze(path: Path, proposition: int, verbose: bool = False) -> int:
     print(f"Submitting proposition {proposition} to dianoia for analysis…")
     try:
         results = dianoia_client.evaluate(args_dict, step=str(proposition))
-    except (FileNotFoundError, RuntimeError) as e:
+    except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 

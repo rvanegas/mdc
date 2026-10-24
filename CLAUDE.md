@@ -142,7 +142,7 @@ The library indexer indexes bare `*.md` files and `*.document.md` files. Chat, a
 
 Proposition numbers are a strict integer succession starting at 1 with no gaps, and are never renumbered once assigned (`validate_proposition_numbering` in `argue.py` enforces this on every AI-driven edit). A proposition with justifiers (a `(from: ...)` clause) is an "argument" — its justifiers are premises, itself the conclusion. `mdc analyze <doc> <proposition>` submits one argument's chain to dianoia and writes the result to `<stem>.analysis.md`, labeling it with a letter (A, B, C, …, Z, AA, …) following Roxana's convention exactly: computed from the proposition's ascending position among all justified propositions, never persisted (`assign_argument_labels` / `_to_alpha_index` in `argue.py`).
 
-`mdc audit <doc>` checks the whole `.argument.md` companion against dianoia's structural conditions (connectivity, order-independence, conclusion legibility) via `dianoia audit`, printing per-finding issues and revision pointers; exits 1 when findings exist.
+`mdc audit <doc>` checks the whole `.argument.md` companion against dianoia's structural conditions (connectivity, order-independence, conclusion legibility) via dianoia's `/argument/audit` route, printing per-finding issues and revision pointers; exits 1 when findings exist.
 
 ## Writing Assistant
 
