@@ -59,7 +59,14 @@ waits for `commons` so mdc moves only once.
 
 ---
 
-## Phase 0 — mdc calls dianoia over HTTPS
+## Phase 0 — mdc calls dianoia over HTTPS — done 2026-10-24
+
+**Landed:** dianoia `405a5a2` (deployed on `Ubuntu-3` with `MDC_TOKEN` in
+`.env`) and mdc `ab1f935`. **Verified** in production: without a token
+`/argument/extract` returns 401, and with mdc's token and an empty body it
+returns 422. A live `mdc argue` and `mdc analyze` on a throwaway document
+extracted the argument, ran all six agents on proposition 4 alone, and wrote
+the analysis.
 
 - **dianoia:** two new routes in `src/api/argument.py`, alongside the existing
   `POST /argument/audit`:
