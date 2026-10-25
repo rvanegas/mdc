@@ -51,11 +51,17 @@ below makes SITE.md's description true.
 
 ## Order, alongside SITE.md
 
-mdc Phase 0 → SITE Phase 1 → SITE Phase 2 (`commons` + Caddy) → mdc Phase 1 on
-`commons` → then SITE Phases 3–4 and mdc Phases 2–3 in parallel.
+One phase at a time, nothing in parallel (decided 2026-10-25; SITE.md,
+*Alongside mdc's `SERVER.md`*, holds the authoritative list):
 
-mdc Phase 0 depends on no box and is assumed by SITE Phase 4. mdc Phase 1
-waits for `commons` so mdc moves only once.
+mdc Phase 0 → SITE Phase 1 → SITE Phase 2 (`commons` + Caddy) → SITE Phase 3
+→ SITE Phase 5 → SITE Phase 4 (without Roxana's Gen 2) → mdc Phase 1 → mdc
+Phase 2 → mdc Phase 3.
+
+mdc Phase 0 depends on no box and is assumed by SITE Phase 4. mdc Phases 1–3
+wait for the SITE work to finish; mdc still moves only once, and SITE Phase
+4's mdc items (its own AppSync key, the fixture test of `dianoia_client.py`)
+land in the CLI first, so its server `.env` starts with them.
 
 ---
 
@@ -91,7 +97,7 @@ the analysis.
 - **Caveat:** dianoia keeps agent state in memory. A dianoia restart during an
   evaluation loses that run.
 
-## Phase 1 — mdc on `commons` (after SITE Phase 2)
+## Phase 1 — mdc on `commons` (after SITE Phase 4)
 
 - **Image:** `Dockerfile` from `python:3.13-slim`, like dianoia's: `pip install
   .`, `pandoc`, `texlive-xetex`, `lmodern`, `texlive-fonts-recommended`,
