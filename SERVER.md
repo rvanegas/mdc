@@ -169,9 +169,12 @@ Decided while building:
   Caddy answers 502 there, which is harmless.
 
 **Migrating the Mac** comes first, because `.mdc/` is what seeding sends, and
-goes together with installing this version (the `release` skill, then `pipx
-install`): the installed 0.1.x reads the old state directory, and its
-`mdc index` would otherwise find no state and reindex everything.
+goes right after landing: the Mac's `mdc` is an editable install of the
+`~/src/mdc` checkout, so landing switches it to `.mdc/` at once, and an
+`mdc index` before the migration finds no state and reindexes everything.
+That happened on 2026-10-26 while the checkout sat on this branch (7
+documents indexed, `MANIFEST.md` overwritten, then rebuilt from the intact
+state). Branch work stays in a worktree (`~/src/mdc-library-layout`).
 
 ```bash
 python3 scripts/migrate_library.py ~/Documents/Writing/Chats
