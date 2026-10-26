@@ -12,6 +12,14 @@ dependencies = [
   "anthropic>=0.40.0",
   "openai>=1.30.0",
   "platformdirs>=4.0.0",
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0.0",
+  "httpx>=0.27.0",
 ]
 
 [project.scripts]
@@ -21,7 +29,7 @@ mdc = "mdc.cli:main"
 packages = ["mdc"]
 
 [tool.setuptools.package-data]
-mdc = ["*.toml", "*.md"]
+mdc = ["*.toml", "*.md", "deployed.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

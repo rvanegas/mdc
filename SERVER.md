@@ -97,7 +97,63 @@ the analysis.
 - **Caveat:** dianoia keeps agent state in memory. A dianoia restart during an
   evaluation loses that run.
 
-## Phase 1 — mdc on `commons` (after SITE Phase 4)
+## Phase 1 — mdc on `commons` — built 2026-10-25, not yet deployed
+
+**Built** on mdc branch `server-phase1` and rvanegas-site branch
+`mdc-phase1`: `Dockerfile`, `docker-compose.yml`, `.dockerignore`,
+`bin/deploy`, `scripts/migrate_state.py`, `mdc serve` with `GET /healthz`
+(`mdc/server.py`), their tests, and the Caddy block. The image has not been
+built anywhere yet (no Docker on the Mac); its first build is the first
+deploy. **Left, each on its own go-ahead:** land both branches; the `mdc` A
+record at Namecheap; the box's `~/mdc/.env`; seeding the workspace;
+`bin/deploy`; installing the Caddyfile; the smoke test.
+
+Decided while building:
+
+- **`/healthz` needs a server, so `mdc serve` starts here** with that one
+  route (FastAPI + uvicorn), and is the image's command from the start. Phase
+  2 adds routes to it. `serve` skips writing default config files: the server
+  process has no home, and each run brings a workspace's.
+- **`migrate_state.py` runs on the Mac against a staged copy**, so no key
+  ever leaves. Besides `library-manifest.json` it re-roots `library-index.json`
+  and `library-relations.json` (each carries `library_path`, and `library.py`
+  ignores state whose path does not match), rebases the asset caches' keys
+  (absolute paths), deletes `config.toml~` and `config.toml.bak-*` (both hold
+  keys), and drops the secret keys and `ollama_base_url` from `config.toml`,
+  because a key there would win over the container's environment.
+- **The pytest extra is in the image**, so `pytest tests/` runs there.
+- **`pdf` needs no change:** it only calls `open` when it exists, and the
+  container has none.
+
+Seeding, in order (operator task, after `.env` and before the first deploy's
+smoke test):
+
+```bash
+stage=$(mktemp -d)
+mkdir -p $stage/.config $stage/.local/state $stage/.cache
+cp -R ~/.config/mdc $stage/.config/
+cp -R ~/.local/state/mdc $stage/.local/state/
+cp -R ~/.cache/mdc $stage/.cache/
+python3 scripts/migrate_state.py $stage \
+    --old-root ~/Documents/Writing/Chats --new-root /data/workspaces/rodrigo/files
+SSH="ssh -i ~/.ssh/lightsail-ubuntu"
+$SSH ubuntu@32.190.173.222 'mkdir -p /srv/mdc/workspaces/rodrigo/files /srv/mdc/workspaces/rodrigo/home'
+rsync -a -e "$SSH" $stage/ ubuntu@32.190.173.222:/srv/mdc/workspaces/rodrigo/home/
+rsync -a -e "$SSH" ~/Documents/Writing/Chats/ ubuntu@32.190.173.222:/srv/mdc/workspaces/rodrigo/files/
+rm -rf $stage
+```
+
+Smoke test commands take the workspace as home and working directory:
+
+```bash
+cd ~/mdc && docker compose run --rm \
+  -e HOME=/data/workspaces/rodrigo/home -w /data/workspaces/rodrigo/files \
+  mdc mdc check <file>
+docker compose run --rm -w /app mdc pytest -p no:cacheprovider tests/
+```
+
+The plan as written before building:
+
 
 - **Image:** `Dockerfile` from `python:3.13-slim`, like dianoia's: `pip install
   .`, `pandoc`, `texlive-xetex`, `lmodern`, `texlive-fonts-recommended`,
@@ -210,8 +266,10 @@ command becomes `mdc serve`.
   Phase 4's drift guard). Dianoia route tests: a missing or wrong token gets
   401. Against the live service: `mdc argue`, `mdc analyze`, `mdc audit` on a
   sample document with no `dianoia` on the Mac's `PATH`.
-- **Phase 1:** the smoke test above. `curl -sI https://mdc.rvanegas.co/healthz`
-  returns 200 with the expected sha.
+- **Phase 1:** `tests/test_server.py` (`/healthz` says `dev` in a checkout and
+  the stamped commit otherwise) and `tests/test_migrate_state.py`; then the
+  smoke test above, and `bin/deploy` ending with
+  `https://mdc.rvanegas.co/healthz` answering the sha it sent.
 - **Phase 2:** `tests/test_server.py` with FastAPI's `TestClient` checks that
   auth is required, path escapes are refused, a stale `If-Match` gets 409,
   `/run` streams and reports changed files, and the workspace lock holds.

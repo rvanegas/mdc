@@ -1,0 +1,16 @@
+services:
+  mdc:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    # The box's deploy user (ubuntu), which owns /srv/mdc, so files written
+    # into the workspaces stay editable from the host.
+    user: "1000:1000"
+    # Workspaces: /data/workspaces/<user>/{home,files} (SERVER.md).
+    volumes:
+      - /srv/mdc:/data
+    # Loopback only: Caddy on the box is the one public front door
+    # (rvanegas-site's Caddyfile).
+    ports:
+      - "127.0.0.1:8001:8001"

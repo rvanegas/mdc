@@ -163,14 +163,19 @@ def _resolve_edit_paths(s: str, cwd: Path) -> list[Path]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # The server has no user home of its own; each workspace brings one.
+    if args.command == "serve":
+        from mdc.server import run_serve
+        return run_serve(host=args.host, port=args.port)
+
     from mdc.config import DEFAULT_CONFIG_PATH, DEFAULT_SYSTEM_PROMPT_PATH, _write_default_config, _write_default_system_prompt
     if not DEFAULT_CONFIG_PATH.exists():
         _write_default_config(DEFAULT_CONFIG_PATH)
     if not DEFAULT_SYSTEM_PROMPT_PATH.exists():
         _write_default_system_prompt(DEFAULT_SYSTEM_PROMPT_PATH)
-
-    parser = build_parser()
-    args = parser.parse_args(argv)
 
     try:
         if args.command == "review":
@@ -618,6 +623,14 @@ def build_parser() -> argparse.ArgumentParser:
         "config",
         help="Show configuration and data file locations.",
     )
+
+    # serve
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Run mdc's HTTP API (SERVER.md).",
+    )
+    serve_parser.add_argument("--host", default="127.0.0.1", help="Interface to bind. Default: 127.0.0.1.")
+    serve_parser.add_argument("--port", type=int, default=8001, help="Port to bind. Default: 8001.")
 
     # files
     files_parser = subparsers.add_parser(

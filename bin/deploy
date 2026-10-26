@@ -1,0 +1,104 @@
+#!/bin/bash
+#
+# Ships mdc to the commons box, rebuilds its container, and checks that the
+# commit it sent is the one answering.
+#
+#   bin/deploy              refuses unless the tree is clean
+#   bin/deploy --dirty      ships the working tree as it stands, and says so
+#
+# Run from the Mac, as dianoia/bin/deploy is: rsync rather than a git pull on
+# the box, so the box needs no GitHub credential and what ships is what this
+# checkout holds. The box's .env holds production secrets and is never sent or
+# overwritten. The workspaces in /srv/mdc are data, not code: this never
+# touches them (seeding one is an operator task, SERVER.md Phase 1).
+#
+# The box is commons (~/src/rvanegas-site/PROJECTS.md); COMMONS_HOST overrides.
+set -euo pipefail
+
+HOST=${COMMONS_HOST:-ubuntu@32.190.173.222}
+KEY=${COMMONS_KEY:-~/.ssh/lightsail-ubuntu}
+SSH="ssh -i $KEY -o BatchMode=yes"
+URL=${MDC_URL:-https://mdc.rvanegas.co}
+
+cd "$(dirname "$0")/.."
+
+allow_dirty=false
+for arg in "$@"; do
+  case "$arg" in
+    --dirty) allow_dirty=true ;;
+    -h|--help)
+      awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$0"
+      exit 0
+      ;;
+    *) echo "unknown argument: $arg" >&2; exit 2 ;;
+  esac
+done
+
+if [ -n "$(git status --porcelain)" ] && ! $allow_dirty; then
+  echo "✗ the tree is dirty; this ships the working tree, not a commit" >&2
+  echo >&2
+  git status --short >&2
+  echo >&2
+  echo "  commit first, or 'bin/deploy --dirty' to ship it as it is" >&2
+  exit 1
+fi
+
+echo "→ tests"
+python3 -m pytest -q tests/ >/dev/null
+
+SHA=$(git rev-parse --short HEAD)
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ -n "$(git status --porcelain)" ]; then
+  SHA="$SHA-dirty"
+  echo "⚠ deploying a dirty tree — the box will record $SHA" >&2
+fi
+if [ "$BRANCH" != "master" ]; then
+  echo "⚠ deploying from $BRANCH, not master" >&2
+fi
+
+# Baked into the image with the code it describes (the Dockerfile copies mdc/
+# and package-data includes it), and read by mdc/server.py. Gitignored, and
+# removed again once sent, so a server run from this checkout reports "dev".
+printf '{"commit":"%s","branch":"%s","deployedAt":"%s"}\n' \
+  "$SHA" "$BRANCH" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > mdc/deployed.json
+trap 'rm -f mdc/deployed.json' EXIT
+
+# --delete leaves excluded paths alone on the box, which is what keeps .env
+# there. The .env pattern is a wildcard so an editor's .env~ is never sent.
+echo "→ sync to $HOST"
+rsync -az --delete -e "$SSH" \
+  --exclude .git --exclude '/.claude/' \
+  --exclude '.env*' \
+  --exclude venv --exclude .venv --exclude __pycache__ --exclude '*.egg-info' \
+  --exclude .pytest_cache --exclude '/dist/' --exclude '/build/' \
+  ./ "$HOST:mdc/"
+
+echo "→ build and restart"
+$SSH "$HOST" 'set -euo pipefail
+  cd ~/mdc
+  [ -f .env ] || { echo "✗ no ~/mdc/.env on the box (PROJECTS.md names what it holds)" >&2; exit 1; }
+  [ -d /srv/mdc ] || { echo "✗ no /srv/mdc on the box (bin/provision-commons makes it)" >&2; exit 1; }
+  docker compose up --build -d --remove-orphans 2>&1 | tail -3'
+
+echo "→ health on the box"
+got=""
+for _ in $(seq 30); do
+  got=$($SSH "$HOST" 'curl -fsS --max-time 3 http://127.0.0.1:8001/healthz' 2>/dev/null \
+    | sed -n 's/.*"commit":"\([^"]*\)".*/\1/p' || true)
+  [ "$got" = "$SHA" ] && break
+  sleep 2
+done
+if [ "$got" != "$SHA" ]; then
+  echo "✗ the box answers ${got:-nothing}, not $SHA" >&2
+  echo "  $SSH $HOST 'cd ~/mdc && docker compose logs --tail 50'" >&2
+  exit 1
+fi
+echo "  127.0.0.1:8001 runs $SHA"
+
+echo "→ health at $URL"
+got=$(curl -fsS --max-time 10 "$URL/healthz" | sed -n 's/.*"commit":"\([^"]*\)".*/\1/p' || true)
+if [ "$got" != "$SHA" ]; then
+  echo "✗ $URL/healthz answers ${got:-nothing}, not $SHA" >&2
+  exit 1
+fi
+echo "✓ deployed $SHA, answering at $URL"

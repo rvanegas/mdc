@@ -32,7 +32,7 @@ The tool has two main pipelines: **CLI → Transcript parsing → Format validat
 
 ### Key modules
 
-- **`cli.py`** — 7 subcommands: `index`, `new`, `check`, `validate`, `fix`, `reply`, `pdf`
+- **`cli.py`** — the subcommands, among them `index`, `new`, `check`, `validate`, `fix`, `reply`, `pdf`, `argue`, `analyze`, `audit`, `export`, `serve`
 - **`transcript.py`** — Core parsing: splits markdown into preamble + conversational turns, detects pending human turns awaiting reply, manages reference sections
 - **`form.py`** — Enforces the 12-rule transcript format (blank lines, headers, speaker labels, reference formatting, filename derivation)
 - **`assets.py`** — Collects local file references from markdown links, validates paths stay within the transcript directory, builds API-specific inputs with caching directives
@@ -179,6 +179,15 @@ When a document is indexed for the library, each section is annotated with a `[V
 - `[VOICE: this entire document is the user's own writing]` — plain documents with no transcript structure
 
 These labels are stripped before sending to the model during `reply` but are present in library context so the model can reason about authorship.
+
+## Server
+
+mdc is moving onto the `commons` box behind `mdc.rvanegas.co` (`SERVER.md`, phase by phase).
+
+- **`mdc serve`** (`server.py`) runs the FastAPI app; Phase 1 has only `GET /healthz`, reading `mdc/deployed.json` (stamped by `bin/deploy`, gitignored, `{"commit": "dev"}` when absent). `main()` dispatches `serve` before writing default config files, since the server process has no home of its own.
+- **`Dockerfile` / `docker-compose.yml`**: `python:3.13-slim` with pandoc and XeTeX, on `127.0.0.1:8001`, as uid 1000, with `/srv/mdc` mounted at `/data`. A workspace is `/data/workspaces/<user>/{home,files}`; a command runs with `HOME=…/home` and `cwd` in `files/`.
+- **`bin/deploy`**: tests, rsync to `~/mdc` on the box, `docker compose up --build`, then `/healthz` on the box and at the public name. Never touches `.env` or `/srv/mdc`.
+- **`scripts/migrate_state.py`**: rewrites a staged copy of `~/.config/mdc`, `~/.local/state/mdc` and `~/.cache/mdc` for a workspace (re-roots `library_path` and asset-cache keys, strips secrets and backups from the config).
 
 ## Configuration
 

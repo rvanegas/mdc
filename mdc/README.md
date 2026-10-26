@@ -382,6 +382,17 @@ mdc files ls                     # list files on the server
 
 ---
 
+### `mdc serve`
+
+Run mdc's HTTP API with uvicorn. It is how mdc runs on the server (`SERVER.md`); on the Mac there is no reason to start it.
+
+```bash
+mdc serve                          # 127.0.0.1:8001
+mdc serve --host 0.0.0.0 --port 8001
+```
+
+For now it answers only `GET /healthz`: `{"ok": true, "commit": ...}`, with the commit stamped by `bin/deploy` (`"dev"` in a checkout).
+
 ## Editor Integration
 
 The `editors/` directory contains plugins for Emacs and Sublime Text. Both auto-activate on any file whose name matches the MDC convention (`yyyy-mm-dd-*.md`).

@@ -38,7 +38,7 @@ llm_names = ["Claude", "GPT"]
 # API base URL and service token used by "mdc argue", "mdc analyze" and "mdc audit".
 # The token is dianoia's MDC_TOKEN. Can also be set via DIANOIA_API_URL /
 # DIANOIA_TOKEN environment variables.
-# dianoia_api_url = "https://dianoia.rvanegas.com/api"
+# dianoia_api_url = "https://dianoia.rvanegas.co/api"
 # dianoia_token = "..."
 
 # --- Roxana ---
