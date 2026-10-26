@@ -55,6 +55,23 @@ _RELATED_SECTION_RE = re.compile(r"^## Related\s*$", re.MULTILINE)
 _NEXT_H2_RE = re.compile(r"^## ", re.MULTILINE)
 _STRUCTURAL_HEADINGS = frozenset({"References", "Notes", "Related"})
 
+# A dated file names its role: <date>-<slug>.<role>.<ext>. chat, document and
+# source are written or added by people (a transcript, their own prose,
+# third-party material); argument, analysis and review are written by mdc.
+ROLES = ("chat", "document", "source", "argument", "analysis", "review")
+INDEXED_ROLES = frozenset({"chat", "document", "source"})
+_DATED_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-")
+
+
+def role_of(name: str) -> str | None:
+    parts = name.split(".")
+    return parts[-2] if len(parts) >= 3 and parts[-2] in ROLES else None
+
+
+def lacks_role(name: str) -> bool:
+    """A dated file whose name does not say what it is."""
+    return bool(_DATED_NAME_RE.match(name)) and role_of(name) is None and not name.startswith(".")
+
 
 @dataclass(frozen=True)
 class DocEntry:
@@ -589,14 +606,14 @@ def _finalize(library_path: Path, entries_by_path: dict[str, DocEntry], result: 
 
 def build_index(
     library_path: Path,
-    summarize: Callable[[str, int], tuple[str, list[str]]] | None = None,
+    summarize: Callable[[str, int, str], tuple[str, list[str]]] | None = None,
     on_progress: Callable[[str, str], None] | None = None,
     on_warning: Callable[[str], None] | None = None,
     refs_only: bool = False,
 ) -> tuple[list[DocEntry], list[str]]:
     """Build or update MANIFEST.md and INDEX.md for library_path.
 
-    summarize(content, word_count) -> (summary, terms)
+    summarize(content, word_count, role) -> (summary, terms)
     on_progress(rel_path, status) where status is 'cached' or 'indexed'
     """
     entries_by_path = _load_state(library_path)
@@ -639,7 +656,7 @@ def build_index(
             continue
         if re.search(r"--\d+\.md$", md_path.name):
             continue
-        if md_path.name.endswith(".argument.md") or md_path.name.endswith(".chat.md") or md_path.name.endswith(".review.md") or md_path.name.endswith(".analysis.md"):
+        if role_of(md_path.name) not in INDEXED_ROLES:
             continue
         rel_path = md_path.relative_to(library_path).as_posix()
 
@@ -676,7 +693,7 @@ def build_index(
         wc = _word_count(content)
 
         if summarize:
-            summary, raw_terms = summarize(content, wc)
+            summary, raw_terms = summarize(content, wc, role_of(md_path.name))
         else:
             summary = _fallback_summary(content)
             raw_terms = []

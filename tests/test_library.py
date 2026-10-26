@@ -172,7 +172,7 @@ def test_build_index_caches_unchanged_file(tmp_path):
     import os
     import time
 
-    doc = tmp_path / "doc.md"
+    doc = tmp_path / "doc.document.md"
     doc.write_text("# Doc\nContent here.")
     # Set mtime to 10s ago so it's clearly before the build_index now_ts.
     old = time.time() - 10
@@ -180,7 +180,7 @@ def test_build_index_caches_unchanged_file(tmp_path):
 
     calls = []
 
-    def summarize(content, wc):
+    def summarize(content, wc, role):
         calls.append(content)
         return "A summary.", ["term1"]
 
@@ -193,12 +193,12 @@ def test_build_index_caches_unchanged_file(tmp_path):
 
 
 def test_build_index_reindexes_modified_file(tmp_path):
-    doc = tmp_path / "doc.md"
+    doc = tmp_path / "doc.document.md"
     doc.write_text("# Doc\nOriginal content.")
 
     calls = []
 
-    def summarize(content, wc):
+    def summarize(content, wc, role):
         calls.append(content)
         return "A summary.", ["term1"]
 
@@ -217,17 +217,17 @@ def test_build_index_reindexes_modified_file(tmp_path):
 def test_build_index_excludes_manifest_and_index(tmp_path):
     (tmp_path / MANIFEST_FILENAME).write_text("# Index\n")
     (tmp_path / INDEX_FILENAME).write_text("# Terms\n")
-    doc = tmp_path / "real.md"
+    doc = tmp_path / "real.document.md"
     doc.write_text("# Real\nContent.")
 
     seen = []
 
-    def summarize(content, wc):
+    def summarize(content, wc, role):
         seen.append(content)
         return "s", ["t"]
 
     entries, _ = build_index(tmp_path, summarize=summarize)
-    assert all(e.rel_path == "real.md" for e in entries)
+    assert all(e.rel_path == "real.document.md" for e in entries)
     assert len(entries) == 1
 
 

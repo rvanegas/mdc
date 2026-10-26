@@ -775,7 +775,7 @@ def run_new(title: str | None, edit: bool = False, library_path: Path | None = N
         print(chat_filename)
         paths = [chat_filename, document_filename]
     else:
-        filename = f"{today}-{slug}.md"
+        filename = f"{today}-{slug}.chat.md"
         path = Path(filename)
         if path.exists():
             print(f"Error: '{filename}' already exists.")
@@ -791,6 +791,10 @@ def run_new(title: str | None, edit: bool = False, library_path: Path | None = N
 
 def run_check(path: Path) -> int:
     if _require_md(path):
+        return 1
+    from mdc.library import lacks_role
+    if lacks_role(path.name):
+        print(f"Error: '{path.name}' does not name its role: .chat.md, .document.md or .source.<ext>.")
         return 1
     misplaced_at = _misplaced(path)
     if misplaced_at:

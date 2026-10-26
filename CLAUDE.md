@@ -114,20 +114,22 @@ An optional `KEYS.md` in the library directory controls term canonicalization wi
 - **Co-occurrence supplementation** — after the AI pass, term pairs that co-occur as document tags in at least 2 documents are automatically added as related; this catches corpus-specific clustering the model might miss by reasoning from general knowledge rather than the actual library
 - **KEYS.md Alias** — terms aliased to a canonical are resolved before lookup, so a query for an alias navigates to the canonical's relations transparently
 
-## Companion Files
+## Roles and Companion Files
 
-Files without a secondary suffix (`YYYY-MM-DD-slug.md`) are standalone documents with no companions. A document can acquire up to three companions, each identified by a secondary suffix:
+Every dated file names its role in a secondary suffix: `YYYY-MM-DD-slug.{role}.{ext}` (`library.role_of`). There are no bare dated files: `check` rejects one, and `index` refuses a library that has any (`scripts/migrate_layout.py` named the roles of `rodvandur/philosophy` from mdc's old guess by headings). Files sharing a stem are companions:
 
-| Suffix | Role |
+| Role | What it is |
 |---|---|
-| `.document.md` | The prose document being written/edited |
-| `.chat.md` | Chat transcript that drives `mdc reply`; companion `.document.md` and `.argument.md` files are auto-discovered by stem |
+| `.chat.md` | A transcript; drives `mdc reply`, which auto-discovers the `.document.md` and `.argument.md` of its stem |
+| `.document.md` | The user's own prose |
+| `.source.{ext}` | Third-party material, in any format: a paper, an uploaded markdown file, notes from elsewhere |
 | `.argument.md` | A pure numbered list of propositions, extracted by `mdc argue` |
 | `.analysis.md` | Per-argument dianoia analysis, produced by `mdc analyze <doc> <proposition>`; never hand-edited |
+| `.review.md` | A document's review, written by `mdc review` |
 
-All four share the same date-slug stem: `YYYY-MM-DD-slug.{suffix}.md`.
+Another format keeps its role: `mdc pdf` turns `x.chat.md` into `x.chat.pdf`. Undated files are the library's own: `KEYS.md`, `SYSTEM_PROMPT.md`, the generated `INDEX.md`/`MANIFEST.md`/…, `ASSESSMENTS/`, `REVISIONS/`.
 
-The library indexer indexes bare `*.md` files and `*.document.md` files. Chat, argument, and analysis companions (`.chat.md`, `.argument.md`, `.analysis.md`) are excluded.
+The library indexer indexes `.chat.md`, `.document.md` and `.source.md`, labelling voice by role: a document is the user's own writing, a source third-party, a chat section by section from its speaker headings.
 
 ### Argument files
 

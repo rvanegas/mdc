@@ -15,19 +15,22 @@ from mdc.text_utils import (
 
 def _annotate_voice(
     content: str,
+    role: str,
     user_names: tuple[str, ...],
     llm_names: tuple[str, ...],
 ) -> str:
-    """Return content annotated with [VOICE: ...] labels per section.
+    """Return content annotated with [VOICE: ...] labels, by its role.
 
-    Non-transcripts (including sectionless documents) are prefixed with a
-    label indicating the whole document is the user's own writing.
+    A document is the user's own writing and a source someone else's, whole;
+    a chat is labelled section by section from its speaker headings.
     """
-    from mdc.library import _STRUCTURAL_HEADINGS, is_library_transcript
+    from mdc.library import _STRUCTURAL_HEADINGS
     from mdc.transcript import HEADING_RE
 
-    if not is_library_transcript(content, user_names, llm_names):
+    if role == "document":
         return "[VOICE: this entire document is the user's own writing]\n\n" + content
+    if role == "source":
+        return "[VOICE: third-party — this entire document is source material, not the user's writing]\n\n" + content
 
     user_set = frozenset(user_names)
     llm_set = frozenset(llm_names)
@@ -132,6 +135,17 @@ def run_index(refs_only: bool = False, reprocess_all: bool = False, verbose: boo
         print(f"Error: '{lib_path}' is not a directory.")
         return 1
 
+    # Indexing goes by role; a library with unnamed roles would lose those
+    # documents from its state and summarize them again once named.
+    from mdc.library import lacks_role
+    unnamed = sorted(p.relative_to(lib_path).as_posix() for p in lib_path.rglob("*")
+                     if p.is_file() and lacks_role(p.name)
+                     and not {"REVISIONS", ".mdc"} & set(p.relative_to(lib_path).parts))
+    if unnamed:
+        print(f"Error: {len(unnamed)} dated file(s) without a role (.chat, .document, .source, …), e.g. {unnamed[0]}.")
+        print("Name their roles first (scripts/migrate_layout.py does a whole library).")
+        return 1
+
     summarize = None
     total_cost = 0.0
     last_cost: list[float] = [0.0]
@@ -148,10 +162,10 @@ def run_index(refs_only: bool = False, reprocess_all: bool = False, verbose: boo
         client = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
         rates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
 
-        def summarize(content: str, word_count: int) -> tuple[str, list[str]]:
+        def summarize(content: str, word_count: int, role: str) -> tuple[str, list[str]]:
             nonlocal total_cost
             system = "You are a library indexing assistant."
-            annotated = _annotate_voice(content, config.user_names, config.llm_names)
+            annotated = _annotate_voice(content, role, config.user_names, config.llm_names)
             messages = [{"role": "user", "content": _index_prompt(annotated, word_count)}]
             reply = client.generate_reply(system, messages)
             if rates:

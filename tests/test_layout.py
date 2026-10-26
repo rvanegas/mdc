@@ -46,7 +46,7 @@ def test_move_carries_index_state(library):
 
 
 def test_check_reports_a_misplaced_file(library, monkeypatch, capsys):
-    path = library / "2025" / "_private" / "2025-04-25-x.md"
+    path = library / "2025" / "_private" / "2025-04-25-x.chat.md"
     path.parent.mkdir(parents=True)
     path.write_text(DOC)
     monkeypatch.chdir(path.parent)
@@ -71,9 +71,44 @@ def test_fix_moves_the_file_and_its_companions(library, monkeypatch):
 
 
 def test_validate_runs_inside_a_library(library, monkeypatch, capsys):
-    path = library / "2025" / "2025-04-25-old-roman.md"
+    path = library / "2025" / "2025-04-25-old-roman.chat.md"
     path.parent.mkdir(parents=True)
     path.write_text(DOC)
     monkeypatch.chdir(path.parent)
     assert main(["validate", path.name]) == 0
     assert "Error" not in capsys.readouterr().out
+
+
+def test_role_of():
+    from mdc.library import lacks_role, role_of
+    assert role_of("2026-10-19-parfit2011.source.pdf") == "source"
+    assert role_of("2026-06-29-the-eleatic-critique.chat.md") == "chat"
+    assert role_of("2026-06-29-the-eleatic-critique.chat.pdf") == "chat"
+    assert role_of("2026-06-29-the-eleatic-critique.md") is None
+    assert lacks_role("2026-06-29-the-eleatic-critique.md")
+    assert not lacks_role("KEYS.md")
+    assert not lacks_role("2026-06-29-x.review.md")
+
+
+def test_check_wants_a_role(library, monkeypatch, capsys):
+    path = library / "2025" / "2025-04-25-old-roman.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(DOC)
+    monkeypatch.chdir(path.parent)
+    assert main(["check", path.name]) == 1
+    assert "does not name its role" in capsys.readouterr().out
+
+
+def test_index_refuses_a_library_with_unnamed_roles(library, capsys):
+    (library / "2025").mkdir()
+    (library / "2025" / "2025-04-25-old-roman.md").write_text(DOC)
+    assert main(["index", "--refs-only-all"]) == 1
+    assert "without a role" in capsys.readouterr().out
+
+
+def test_voice_by_role():
+    from mdc.cmd_index import _annotate_voice
+    assert "user's own writing" in _annotate_voice("text", "document", ("Prompt",), ("Claude",))
+    assert "third-party" in _annotate_voice("text", "source", ("Prompt",), ("Claude",))
+    chat = _annotate_voice("\n# T\n\n## Prompt\n\nQ\n\n## Claude\n\nA\n", "chat", ("Prompt",), ("Claude",))
+    assert "[VOICE: user]" in chat and "[VOICE: llm" in chat
