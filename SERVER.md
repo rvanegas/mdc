@@ -153,8 +153,15 @@ Names are unique across a library (checked: no basename repeats outside
 - **Links name assets bare** and resolve across the library, beside the
   transcript first (`assets._AssetScope`); an asset must stay within the
   library. A link with a directory resolves from the transcript as written.
-- **Assets are dated like documents:** by the earliest document linking them,
-  e.g. `2026-10-19-parfit2011.pdf`.
+- **Every dated file names its role:** `<date>-<slug>.<role>.<ext>`, the role
+  one of `chat` (a transcript), `document` (the user's prose), `source`
+  (third-party material, any format), or mdc's `argument`, `analysis`,
+  `review`. Another format keeps the role (`x.chat.pdf`). A bare dated file
+  is an error; the indexer selects and labels voice by role, skipping a
+  writing session's chat for its document.
+- **Sources are dated by the earliest document linking them:**
+  `parfit2011.pdf` → `2026-10-19-parfit2011.source.pdf`. An upload nothing
+  links to takes the date it was added.
 - **The asset cache is keyed by content** (`mdc/asset_cache.py`): a copy,
   sync, rename or move is the same uploaded file. Seeding copies the cache
   as it is.
@@ -162,15 +169,20 @@ Names are unique across a library (checked: no basename repeats outside
   must precede its document (`validate`), so the `_phil184` seminar documents
   each relate the members before them, and the `mmaa` folder (sources for
   *Money and Marriage by Authoritative Assertion*, which does not reference
-  them) becomes a hub dated by its last source. `_private` and `_published`
-  are dropped: their files move up to their years.
+  them) becomes a hub document dated by its last source. `_private` and
+  `_published` are dropped: their files move up to their years.
+- **Anthropic alone:** OpenAI and Ollama are retired (2026-10-26). `## GPT`
+  turns of older transcripts are still read as the model's voice.
 
 `scripts/migrate_layout.py` does this to `rodvandur/philosophy` (plan by
-default, `--apply` to make it), rehearsed on a copy: 526 files moved, six
-assets renamed, the 631 index entries all carried over, and a following
-`mdc index` summarizes only the 11 documents the migration writes. Before it,
-2026-10-26: the tension drafts and `_phil184/conversations.zip` went to the
-Trash, and `condensed-systematicity.{wav,pdf}` out to `~/Documents/Writing`.
+default, `--apply` to make it). Rehearsed on a copy: 5 editor backups to the
+Trash, 6 sources named, 602 bare transcripts → `.chat.md`, 23 → `.document.md`,
+35 PDFs → `.chat.pdf`; 924 files renamed or moved; all 631 index entries
+carried, and the following `mdc index` summarizes 11 documents, the ones the
+migration writes. A second run finds nothing to do. Before it, 2026-10-26: the
+tension drafts, `_phil184/conversations.zip` and the unlinked
+`2026-07-28-civilizational-conflict.pdf` went to the Trash, and
+`condensed-systematicity.{wav,pdf}` out to `~/Documents/Writing`.
 
 ## Phase 1 — mdc on `commons` — built, not yet deployed
 

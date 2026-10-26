@@ -658,6 +658,10 @@ def build_index(
             continue
         if role_of(md_path.name) not in INDEXED_ROLES:
             continue
+        # A writing session's chat drives the edits to its document, which is
+        # what gets indexed.
+        if role_of(md_path.name) == "chat" and md_path.with_name(md_path.name.split(".")[0] + ".document.md").exists():
+            continue
         rel_path = md_path.relative_to(library_path).as_posix()
 
         existing = entries_by_path.get(rel_path)

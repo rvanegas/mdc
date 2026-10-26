@@ -112,3 +112,13 @@ def test_voice_by_role():
     assert "third-party" in _annotate_voice("text", "source", ("Prompt",), ("Claude",))
     chat = _annotate_voice("\n# T\n\n## Prompt\n\nQ\n\n## Claude\n\nA\n", "chat", ("Prompt",), ("Claude",))
     assert "[VOICE: user]" in chat and "[VOICE: llm" in chat
+
+
+def test_index_takes_a_sessions_document_not_its_chat(tmp_path):
+    from mdc.library import build_index
+    (tmp_path / "2026").mkdir()
+    (tmp_path / "2026" / "2026-06-30-x.chat.md").write_text(DOC)
+    (tmp_path / "2026" / "2026-06-30-x.document.md").write_text("\n# X\n2026-06-30\n\nProse.\n")
+    (tmp_path / "2026" / "2026-07-01-y.chat.md").write_text(DOC)
+    entries, _ = build_index(tmp_path, summarize=lambda content, wc, role: ("s", ["t"]))
+    assert sorted(e.rel_path for e in entries) == ["2026/2026-06-30-x.document.md", "2026/2026-07-01-y.chat.md"]
