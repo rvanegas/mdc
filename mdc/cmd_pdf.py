@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -34,9 +33,11 @@ def run_pdf(path: Path, quiet: bool = False) -> int:
             print(f"pandoc error:\n{result.stderr}", file=sys.stderr)
             return result.returncode
     tmp_path.unlink(missing_ok=True)
+    # Only on a desktop: a Linux server (mdc's container) has an `open` too,
+    # from xdg-utils, which goes looking for a browser.
     if not quiet:
-        if shutil.which("open"):
+        if sys.platform == "darwin":
             subprocess.run(["open", str(output)])
-        elif shutil.which("start"):
-            subprocess.run(["start", str(output)], shell=True)
+        elif sys.platform == "win32":
+            subprocess.run(["start", "", str(output)], shell=True)
     return 0
