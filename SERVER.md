@@ -99,12 +99,12 @@ the analysis.
 
 ## Phase 1 — mdc on `commons` — built 2026-10-25, not yet deployed
 
-**Built** on mdc branch `server-phase1` and rvanegas-site branch
-`mdc-phase1`: `Dockerfile`, `docker-compose.yml`, `.dockerignore`,
+**Built** on mdc branch `server-phase1` (and the Caddy block on
+rvanegas-site's master, which is not installed on the box): `Dockerfile`, `docker-compose.yml`, `.dockerignore`,
 `bin/deploy`, `scripts/migrate_state.py`, `mdc serve` with `GET /healthz`
 (`mdc/server.py`), their tests, and the Caddy block. The image has not been
 built anywhere yet (no Docker on the Mac); its first build is the first
-deploy. **Left, each on its own go-ahead:** land both branches; the `mdc` A
+deploy. **Left, each on its own go-ahead:** land `server-phase1`; the `mdc` A
 record at Namecheap; the box's `~/mdc/.env`; seeding the workspace;
 `bin/deploy`; installing the Caddyfile; the smoke test.
 
