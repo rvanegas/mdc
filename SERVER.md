@@ -139,6 +139,39 @@ moves into `<library>/.mdc/`; `--lib` reaches every command (it used to miss
 `review-*.json` migration goes with it. Data migration:
 `scripts/migrate_library.py`.
 
+## Library layout (decided 2026-10-26)
+
+Names are unique across a library (checked: no basename repeats outside
+`REVISIONS/`), so a directory carries nothing a name does not.
+
+- **A dated file lives in the year directory its name gives:**
+  `2026/2026-06-29-the-eleatic-critique.md`, its companions, review and PDF
+  beside it. `REVISIONS/`, `ASSESSMENTS/` and `.mdc/` are kept apart by what
+  they are. `check` reports a misplaced file; `fix` moves it with everything
+  sharing its stem and carries its index state (`library.move_documents`), so
+  a move is never reindexed.
+- **Links name assets bare** and resolve across the library, beside the
+  transcript first (`assets._AssetScope`); an asset must stay within the
+  library. A link with a directory resolves from the transcript as written.
+- **Assets are dated like documents:** by the earliest document linking them,
+  e.g. `2026-10-19-parfit2011.pdf`.
+- **The asset cache is keyed by content** (`mdc/asset_cache.py`): a copy,
+  sync, rename or move is the same uploaded file. Seeding copies the cache
+  as it is.
+- **Folders that grouped documents** become Related entries. A Related title
+  must precede its document (`validate`), so the `_phil184` seminar documents
+  each relate the members before them, and the `mmaa` folder (sources for
+  *Money and Marriage by Authoritative Assertion*, which does not reference
+  them) becomes a hub dated by its last source. `_private` and `_published`
+  are dropped: their files move up to their years.
+
+`scripts/migrate_layout.py` does this to `rodvandur/philosophy` (plan by
+default, `--apply` to make it), rehearsed on a copy: 526 files moved, six
+assets renamed, the 631 index entries all carried over, and a following
+`mdc index` summarizes only the 11 documents the migration writes. Before it,
+2026-10-26: the tension drafts and `_phil184/conversations.zip` went to the
+Trash, and `condensed-systematicity.{wav,pdf}` out to `~/Documents/Writing`.
+
 ## Phase 1 — mdc on `commons` — built, not yet deployed
 
 **Built** 2026-10-25 on `server-phase1` (landed on master `49e68a2`):
@@ -195,11 +228,7 @@ SSH="ssh -i ~/.ssh/lightsail-ubuntu"
 $SSH $BOX 'mkdir -p /srv/mdc/libraries/rodvandur/philosophy /srv/mdc/cache'
 rsync -a -e "$SSH" --exclude .DS_Store --exclude '*~' --exclude '*.pages' \
     ~/Documents/Writing/Chats/ $BOX:/srv/mdc/libraries/rodvandur/philosophy/
-cache=$(mktemp)
-python3 scripts/rebase_cache.py ~/.cache/mdc/anthropic-asset-cache.json $cache \
-    --old-root ~/Documents/Writing/Chats --new-root /data/libraries/rodvandur/philosophy
-rsync -e "$SSH" $cache $BOX:/srv/mdc/cache/anthropic-asset-cache.json
-rm $cache
+rsync -e "$SSH" ~/.cache/mdc/anthropic-asset-cache.json $BOX:/srv/mdc/cache/
 ```
 
 This copy is disposable until Phase 3: edits on the Mac do not reach it, and
@@ -318,7 +347,7 @@ Phase 1's `/healthz`.
   `mdc/cli.py`, `mdc/cmd_pdf.py`, new `mdc/server.py` and `mdc/remote.py`,
   `mdc/library.py`, `mdc/review.py`, `mdc/cmd_*.py`, `etc/config.toml`,
   `Dockerfile`, `docker-compose.yml`, `bin/deploy`,
-  `scripts/migrate_library.py`, `scripts/rebase_cache.py`, `tests/`,
+  `scripts/migrate_library.py`, `scripts/migrate_layout.py`, `mdc/asset_cache.py`, `tests/`,
   `pyproject.toml` (fastapi, uvicorn),
   `CLAUDE.md`, `mdc/README.md`
 - **dianoia:** `src/api/argument.py` (`extract`, `evaluate`, token dependency),
@@ -334,7 +363,7 @@ Phase 1's `/healthz`.
 - **Phase 1:** `tests/test_server.py` (`/healthz` says `dev` in a checkout and
   the stamped commit otherwise), `tests/test_config.py` (library, names and
   system prompt per run), `tests/test_migrate_library.py`,
-  `tests/test_rebase_cache.py`; `migrate_library.py` rehearsed on a copy of
+  `tests/test_layout.py`, `tests/test_asset_cache.py`, `tests/test_assets_scope.py`; `migrate_library.py` rehearsed on a copy of
   the real library (630 entries and 5,190 terms load from `.mdc/`); then the
   smoke test above, and `bin/deploy` ending with
   `https://mdc.rvanegas.co/healthz` answering the sha it sent.

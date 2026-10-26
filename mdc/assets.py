@@ -33,11 +33,11 @@ class LocalAssetReference:
 
 
 def collect_local_assets(transcript: Transcript, transcript_path: Path) -> dict[int, tuple[LocalAssetReference, ...]]:
-    base_dir = transcript_path.parent.resolve()
+    scope = _AssetScope.for_transcript(transcript_path)
     assets_by_turn: dict[int, tuple[LocalAssetReference, ...]] = {}
 
     for index, turn in enumerate(transcript.turns):
-        assets = tuple(_collect_assets_for_turn(turn, base_dir))
+        assets = tuple(_collect_assets_for_turn(turn, scope))
         if assets:
             assets_by_turn[index] = assets
 
@@ -50,7 +50,7 @@ def collect_local_assets(transcript: Transcript, transcript_path: Path) -> dict[
     if section_text.strip() and pending_index is not None:
         existing = assets_by_turn.get(pending_index, ())
         seen_paths = {a.path for a in existing}
-        section_assets = tuple(_collect_assets_from_text(section_text, base_dir, seen_paths))
+        section_assets = tuple(_collect_assets_from_text(section_text, scope, seen_paths))
         if section_assets:
             assets_by_turn[pending_index] = existing + section_assets
 
@@ -102,7 +102,7 @@ def build_response_input(
     return messages
 
 
-def _collect_assets_from_text(text: str, base_dir: Path, seen_paths: set[Path] | None = None) -> list[LocalAssetReference]:
+def _collect_assets_from_text(text: str, scope: "_AssetScope", seen_paths: set[Path] | None = None) -> list[LocalAssetReference]:
     if seen_paths is None:
         seen_paths = set()
     assets: list[LocalAssetReference] = []
@@ -110,7 +110,7 @@ def _collect_assets_from_text(text: str, base_dir: Path, seen_paths: set[Path] |
         raw_target = _normalize_markdown_target(match.group(3))
         if not _is_local_target(raw_target):
             continue
-        path = _resolve_asset_path(raw_target, base_dir)
+        path = _resolve_asset_path(raw_target, scope)
         if path in seen_paths:
             continue
         assets.append(LocalAssetReference(
@@ -123,8 +123,8 @@ def _collect_assets_from_text(text: str, base_dir: Path, seen_paths: set[Path] |
     return assets
 
 
-def _collect_assets_for_turn(turn: Turn, base_dir: Path) -> list[LocalAssetReference]:
-    return _collect_assets_from_text(turn.content, base_dir)
+def _collect_assets_for_turn(turn: Turn, scope: "_AssetScope") -> list[LocalAssetReference]:
+    return _collect_assets_from_text(turn.content, scope)
 
 
 def _normalize_markdown_target(raw_target: str) -> str:
@@ -145,11 +145,52 @@ def _is_local_target(target: str) -> bool:
     return True
 
 
-def _resolve_asset_path(raw_target: str, base_dir: Path) -> Path:
-    candidate = (base_dir / raw_target).resolve(strict=False)
-    if not _is_within_base_dir(candidate, base_dir):
+class _AssetScope:
+    """Where a transcript's links resolve: its library, else its own directory.
+
+    Names are unique across a library, so a bare name is found wherever the
+    library keeps it (its year directory, say), beside the transcript first.
+    A link with a directory in it resolves from the transcript, as written.
+    Either way the asset stays within the scope's root.
+    """
+
+    def __init__(self, transcript_dir: Path, root: Path) -> None:
+        self.transcript_dir = transcript_dir
+        self.root = root
+        self._by_name: dict[str, list[Path]] | None = None
+
+    @classmethod
+    def for_transcript(cls, transcript_path: Path) -> "_AssetScope":
+        from mdc.config import load_config
+        transcript_dir = transcript_path.parent.resolve()
+        library = load_config().library_path
+        if library and _is_within_base_dir(transcript_dir, library.resolve()):
+            return cls(transcript_dir, library.resolve())
+        return cls(transcript_dir, transcript_dir)
+
+    def find_by_name(self, name: str) -> list[Path]:
+        if self._by_name is None:
+            from mdc.config import LIBRARY_STATE_DIRNAME
+            skip = {LIBRARY_STATE_DIRNAME, "REVISIONS"}
+            self._by_name = {}
+            for path in self.root.rglob("*"):
+                if path.is_file() and not skip.intersection(path.relative_to(self.root).parts):
+                    self._by_name.setdefault(path.name, []).append(path.resolve())
+        return self._by_name.get(name, [])
+
+
+def _resolve_asset_path(raw_target: str, scope: _AssetScope) -> Path:
+    candidate = (scope.transcript_dir / raw_target).resolve(strict=False)
+    if "/" not in raw_target and not candidate.exists():
+        found = scope.find_by_name(raw_target)
+        if len(found) > 1:
+            listed = ", ".join(str(p.relative_to(scope.root)) for p in found)
+            raise TranscriptError(f"Local asset '{raw_target}' is ambiguous: {listed}.")
+        if found:
+            candidate = found[0]
+    if not _is_within_base_dir(candidate, scope.root):
         raise TranscriptError(
-            f"Local asset '{raw_target}' must stay within the transcript directory '{base_dir}'."
+            f"Local asset '{raw_target}' must stay within '{scope.root}'."
         )
     if not candidate.exists():
         raise TranscriptError(f"Local asset '{raw_target}' does not exist.")
@@ -158,9 +199,9 @@ def _resolve_asset_path(raw_target: str, base_dir: Path) -> Path:
     return candidate
 
 
-def _is_within_base_dir(path: Path, base_dir: Path) -> bool:
+def _is_within_base_dir(path: Path, root: Path) -> bool:
     try:
-        path.relative_to(base_dir)
+        path.relative_to(root)
     except ValueError:
         return False
     return True

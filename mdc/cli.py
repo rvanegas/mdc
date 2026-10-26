@@ -792,6 +792,10 @@ def run_new(title: str | None, edit: bool = False, library_path: Path | None = N
 def run_check(path: Path) -> int:
     if _require_md(path):
         return 1
+    misplaced_at = _misplaced(path)
+    if misplaced_at:
+        print(f"Error: '{path.name}' belongs in {misplaced_at.parent.name}/. Run: mdc fix {path.name}")
+        return 1
     transcript = parse_transcript(_read_file(path))
     assets_by_turn = collect_local_assets(transcript, path)
     asset_count = sum(len(assets) for assets in assets_by_turn.values())
@@ -806,13 +810,41 @@ def run_check(path: Path) -> int:
     return 0
 
 
+def _misplaced(path: Path) -> Path | None:
+    from mdc.library import misplaced
+    library = load_config().library_path
+    return misplaced(library, path) if library else None
+
+
+def _offer_move(path: Path) -> Path | None:
+    """Offer to move a misplaced file, with its companions, into its year directory."""
+    from mdc.library import move_documents, same_stem_files
+    target = _misplaced(path)
+    if not target:
+        return None
+    group = same_stem_files(path)
+    print(f"{path}:")
+    for p in group:
+        print(f"  would move: {p.name} → {target.parent.name}/")
+    try:
+        answer = input("Move? [y/N] ").strip().lower()
+    except EOFError:
+        answer = ""
+    if answer != "y":
+        print("  Skipped.")
+        return None
+    move_documents(load_config().library_path, {p: target.parent / p.name for p in group})
+    print("  Moved.")
+    return target
+
+
 def run_validate(paths: list[Path], force_transcript: bool = False) -> int:
-    from mdc.library import is_library_transcript, resolve_title
-    from mdc.review import list_review_docs
+    from mdc.library import is_library_transcript, load_entries, resolve_title
 
     config = load_config()
     lib = config.library_path if config.library_path and config.library_path.is_dir() else None
-    doc_order = {p.name: i for i, p in enumerate(list_review_docs(lib))} if lib else {}
+    # Indexed documents in chronological order: their names begin with their date.
+    doc_order = {name: i for i, name in enumerate(sorted(Path(e.rel_path).name for e in load_entries(lib)))} if lib else {}
 
     any_errors = False
     for path in paths:
@@ -889,6 +921,11 @@ def run_fix(paths: list[Path]) -> int:
                 print("  Skipped.")
                 print()
                 continue
+
+        moved_to = _offer_move(path)
+        if moved_to:
+            applied.append("moved into its year directory")
+            path = moved_to
 
         errs = check_file(path)
 

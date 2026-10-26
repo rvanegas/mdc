@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-import hashlib
-import json
 import os
-from pathlib import Path
 
 import anthropic
 
+from mdc.asset_cache import AssetCache
 from mdc.assets import LocalAssetReference
 
 
@@ -84,99 +82,6 @@ class _ResolvedAssetFile:
 
 
 @dataclass
-class _AssetCacheEntry:
-    file_id: str
-    sha256: str
-    size: int
-    mtime_ns: int
-    kind: str
-
-
-class _AnthropicAssetCache:
-    def __init__(self) -> None:
-        from mdc.config import _cache_dir
-        self._path = _cache_dir / "anthropic-asset-cache.json"
-        self._entries = self._load()
-
-    def lookup(self, asset: LocalAssetReference) -> str | None:
-        key = str(asset.path)
-        entry = self._entries.get(key)
-        if entry is None:
-            return None
-        stat = asset.path.stat()
-        if entry.kind != asset.kind or entry.size != stat.st_size or entry.mtime_ns != stat.st_mtime_ns:
-            return None
-        if entry.sha256 != _sha256_file(asset.path):
-            return None
-        return entry.file_id
-
-    def store(self, asset: LocalAssetReference, file_id: str) -> None:
-        stat = asset.path.stat()
-        self._entries[str(asset.path)] = _AssetCacheEntry(
-            file_id=file_id,
-            sha256=_sha256_file(asset.path),
-            size=stat.st_size,
-            mtime_ns=stat.st_mtime_ns,
-            kind=asset.kind,
-        )
-        self._persist()
-
-    def all_entries(self) -> dict[str, "_AssetCacheEntry"]:
-        return dict(self._entries)
-
-    def delete(self, asset: LocalAssetReference) -> None:
-        key = str(asset.path)
-        if key in self._entries:
-            del self._entries[key]
-            self._persist()
-
-    def _load(self) -> dict[str, _AssetCacheEntry]:
-        if not self._path.exists():
-            return {}
-        try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return {}
-        entries: dict[str, _AssetCacheEntry] = {}
-        for key, value in data.items():
-            if not isinstance(value, dict):
-                continue
-            try:
-                entries[key] = _AssetCacheEntry(
-                    file_id=str(value["file_id"]),
-                    sha256=str(value["sha256"]),
-                    size=int(value["size"]),
-                    mtime_ns=int(value["mtime_ns"]),
-                    kind=str(value["kind"]),
-                )
-            except (KeyError, TypeError, ValueError):
-                continue
-        return entries
-
-    def _persist(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            key: {
-                "file_id": entry.file_id,
-                "sha256": entry.sha256,
-                "size": entry.size,
-                "mtime_ns": entry.mtime_ns,
-                "kind": entry.kind,
-            }
-            for key, entry in self._entries.items()
-        }
-        self._path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-@dataclass
 class AnthropicChatClient:
     model: str
     api_key: str | None = None
@@ -184,7 +89,7 @@ class AnthropicChatClient:
     def __post_init__(self) -> None:
         api_key = os.environ.get("ANTHROPIC_API_KEY") or self.api_key
         self._client = anthropic.Anthropic(api_key=api_key)
-        self._asset_cache = _AnthropicAssetCache()
+        self._asset_cache = AssetCache("anthropic-asset-cache.json")
 
     def ensure_asset_file(self, asset: LocalAssetReference) -> _ResolvedAssetFile:
         cached = self._asset_cache.lookup(asset)

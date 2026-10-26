@@ -35,7 +35,7 @@ The tool has two main pipelines: **CLI → Transcript parsing → Format validat
 - **`cli.py`** — the subcommands, among them `index`, `new`, `check`, `validate`, `fix`, `reply`, `pdf`, `argue`, `analyze`, `audit`, `export`, `serve`
 - **`transcript.py`** — Core parsing: splits markdown into preamble + conversational turns, detects pending human turns awaiting reply, manages reference sections
 - **`form.py`** — Enforces the 12-rule transcript format (blank lines, headers, speaker labels, reference formatting, filename derivation)
-- **`assets.py`** — Collects local file references from markdown links, validates paths stay within the transcript directory, builds API-specific inputs with caching directives
+- **`assets.py`** — Collects local file references from markdown links (a bare name resolves anywhere in the run's library, beside the transcript first; nothing outside the library), builds API-specific inputs with caching directives
 - **`config.py`** — Loads `config.toml` from `MDC_CONFIG_DIR` (default `~/.config/mdc`); env fallbacks for keys and service URLs; resolves the run's library (`MDC_LIBRARY`) and user names (`MDC_USER_NAMES`); builds the system prompt from a base plus the library's `SYSTEM_PROMPT.md`
 - **`library.py`** — Library indexing: scans a directory of markdown documents, generates AI summaries and index terms, writes `MANIFEST.md` and `INDEX.md`, reads `KEYS.md` for term canonicalization
 - **`anthropic_client.py`**, **`openai_client.py`**, **`ollama_client.py`** — Per-provider streaming clients
@@ -54,7 +54,7 @@ The tool has two main pipelines: **CLI → Transcript parsing → Format validat
 - **Streaming via callbacks** — clients accept an `on_delta` callable and print progressively
 - **`TranscriptError`** for all validation failures
 - **Anthropic prompt caching** — up to 4 cache slots; 3 are allocated to assets
-- **OpenAI asset uploads** — files are cached by ID with expiry tracking; client auto-retries with fresh uploads on cache miss
+- **Asset uploads** — both clients cache remote file IDs by content (`asset_cache.py`); the OpenAI client auto-retries with fresh uploads when a cached file has expired
 - **Heading promotion** — `##` headings in replies are automatically promoted to `###` to avoid conflicts with the transcript structure
 
 ## Transcript Format
@@ -188,7 +188,8 @@ mdc is moving onto the `commons` box behind `mdc.rvanegas.co` (`SERVER.md`, phas
 - **`mdc serve`** (`server.py`) runs the FastAPI app; Phase 1 has only `GET /healthz`, reading `mdc/deployed.json` (stamped by `bin/deploy`, gitignored, `{"commit": "dev"}` when absent). `main()` dispatches `serve` before writing a default config.
 - **`Dockerfile` / `docker-compose.yml`**: `python:3.13-slim` with pandoc and XeTeX, on `127.0.0.1:8001`, as uid 1000, with `/srv/mdc` mounted at `/data`.
 - **`bin/deploy`**: tests, rsync to `~/mdc` on the box, `docker compose up --build`, then `/healthz` on the box and at the public name. Never touches `.env` or `/srv/mdc`.
-- **`scripts/migrate_library.py`** (the data migration into `.mdc/` and `SYSTEM_PROMPT.md`) and **`scripts/rebase_cache.py`** (carries asset-cache entries to a new library root when seeding).
+- **Library layout** (`SERVER.md`, *Library layout*): names are unique across a library; a dated file lives in its year directory (`library.misplaced`; `check` reports, `fix` moves it with its stem-mates via `library.move_documents`, which carries index state); links name assets bare and resolve library-wide (`assets._AssetScope`); assets are dated by their earliest linking document; the asset cache (`asset_cache.py`, shared by both clients) is keyed by content sha256.
+- **`scripts/migrate_library.py`** (the data migration into `.mdc/` and `SYSTEM_PROMPT.md`) and **`scripts/migrate_layout.py`** (the data migration into the year layout; prints its plan unless `--apply`).
 
 ## Configuration
 

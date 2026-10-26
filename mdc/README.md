@@ -142,6 +142,8 @@ mdc check conversation.md
 
 Exits 0 on success, 1 on any error.
 
+In a library, names are unique, so a link names an asset bare (`[Parfit](2026-10-19-parfit2011.pdf)`) and finds it wherever the library keeps it, beside the transcript first; nothing outside the library is read. A dated file belongs in the year directory its name gives (`2026/2026-06-29-the-eleatic-critique.md`): `check` reports one that is elsewhere, and `mdc fix` moves it there with its companions.
+
 ---
 
 ### `mdc validate`

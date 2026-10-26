@@ -878,3 +878,70 @@ LIBRARY_TOOLS = [
         },
     },
 ]
+
+
+# ---------------------------------------------------------------------------
+# Layout: a dated file lives in the year directory its name gives
+# ---------------------------------------------------------------------------
+
+_YEAR_PREFIX_RE = re.compile(r"^(\d{4})-\d{2}-\d{2}-")
+# Kept apart by what they are, not by date: backups, assessments, state.
+_UNSORTED_DIRS = frozenset({"REVISIONS", "ASSESSMENTS", ".mdc"})
+
+
+def misplaced(library_path: Path, path: Path) -> Path | None:
+    """Where a dated file in the library belongs, if not where it is.
+
+    Names are unique across the library, so the directory carries nothing a
+    name does not: `2026-06-29-the-eleatic-critique.md` lives in `2026/`.
+    """
+    library = library_path.resolve()
+    path = path.resolve()
+    try:
+        rel = path.relative_to(library)
+    except ValueError:
+        return None
+    if _UNSORTED_DIRS.intersection(rel.parts[:-1]):
+        return None
+    match = _YEAR_PREFIX_RE.match(path.name)
+    if not match:
+        return None
+    expected = library / match.group(1) / path.name
+    return None if path == expected else expected
+
+
+def same_stem_files(path: Path) -> list[Path]:
+    """The file and its companions: everything beside it sharing its stem."""
+    stem = path.name.split(".")[0]
+    return sorted(p for p in path.parent.iterdir() if p.is_file() and p.name.split(".")[0] == stem)
+
+
+def move_documents(library_path: Path, moves: dict[Path, Path]) -> None:
+    """Move files within the library, carrying their index state along.
+
+    The index keys documents by relative path; without this a moved document
+    would look new and be summarized again at full model cost.
+    """
+    library = library_path.resolve()
+    rel = {
+        old.resolve().relative_to(library).as_posix(): new.resolve().relative_to(library).as_posix()
+        for old, new in moves.items()
+    }
+    for old, new in moves.items():
+        if new.exists():
+            raise FileExistsError(f"{new} already exists")
+        new.parent.mkdir(parents=True, exist_ok=True)
+        old.rename(new)
+
+    entries = _load_state(library)
+    if entries:
+        moved = {rel.get(path, path): replace(e, rel_path=rel.get(path, path)) for path, e in entries.items()}
+        _save_state(library, moved)
+
+    terms_path = _terms_state_path(library)
+    if terms_path.exists():
+        data = json.loads(terms_path.read_text(encoding="utf-8"))
+        for files in data.get("terms", {}).values():
+            for f in files:
+                f["rel_path"] = rel.get(f["rel_path"], f["rel_path"])
+        terms_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
