@@ -25,16 +25,9 @@ wrap_width = 100
 # overrides it for one run.
 # user_names = ["YourName"]
 
-# Section headings recognized as LLM voice in transcripts.
+# Section headings recognized as LLM voice in transcripts. mdc replies as
+# Claude (Anthropic models only); GPT is read in older transcripts.
 llm_names = ["Claude", "GPT"]
-
-# --- OpenAI / Ollama ---
-
-# OpenAI API key. Can also be set via OPENAI_API_KEY environment variable.
-# openai_api_key = "sk-..."
-
-# Ollama endpoint. Default shown.
-# ollama_base_url = "http://localhost:11434/v1"
 
 # --- Dianoia ---
 

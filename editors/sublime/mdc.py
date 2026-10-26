@@ -11,7 +11,7 @@ import sublime_plugin
 
 _MDC_FILENAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-.+\.md$")
 _SECTION_RE = re.compile(r"^## .+", re.MULTILINE)
-_AI_SPEAKERS = frozenset({"claude", "gpt", "ollama"})
+_AI_SPEAKERS = frozenset({"claude", "gpt"})
 _STRUCTURAL_SECTIONS = frozenset({"references", "related"})
 _MDC_SYNTAX = "Packages/mdc/mdc.sublime-syntax"
 _SETTINGS_FILE = "mdc.sublime-settings"

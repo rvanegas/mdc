@@ -10,7 +10,6 @@ readme = "mdc/README.md"
 requires-python = ">=3.11"
 dependencies = [
   "anthropic>=0.40.0",
-  "openai>=1.30.0",
   "platformdirs>=4.0.0",
   "fastapi>=0.115.0",
   "uvicorn>=0.30.0",

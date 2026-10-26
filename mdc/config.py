@@ -30,16 +30,9 @@ LIBRARY_STATE_DIRNAME: Final[str] = ".mdc"
 PROMPT_HEADING: Final[str] = "Prompt"
 
 
-def _default_assistant_name(model: str) -> str:
-    if model.startswith("claude-"):
-        return "Claude"
-    if model.startswith("ollama/"):
-        # e.g. "ollama/llama3.2" -> "Llama", "ollama/mistral" -> "Mistral"
-        raw = model.removeprefix("ollama/").split("/")[-1]
-        word = raw.split("-")[0].split(":")[0]  # drop variant suffixes
-        alpha = "".join(ch for ch in word if ch.isalpha())
-        return alpha.capitalize() if alpha else "Ollama"
-    return "GPT"
+# The heading of the model's turns. Transcripts also hold "## GPT" turns from
+# before mdc used Anthropic alone; llm_names keeps reading them as LLM voice.
+ASSISTANT_NAME: Final[str] = "Claude"
 
 
 DEFAULT_CONFIG_PATH: Final[Path] = _config_dir / "config.toml"
@@ -62,9 +55,7 @@ Year may be a single year (1989), a range (53-55), a slash pair (1781/1787), or 
 class AppConfig:
     model: str | None = None
     system_prompt: str = _BASE_SYSTEM_PROMPT
-    openai_api_key: str | None = None
     anthropic_api_key: str | None = None
-    ollama_base_url: str = "http://localhost:11434/v1"
     library_path: Path | None = None
     index_model: str = "claude-haiku-4-5"
     user_names: tuple[str, ...] = (PROMPT_HEADING,)
@@ -101,9 +92,7 @@ def load_config() -> AppConfig:
             data = loaded
 
     model = str(data.get("model", "")).strip() or None
-    openai_api_key = str(data.get("openai_api_key", "")).strip() or os.environ.get("OPENAI_API_KEY", "").strip() or None
     anthropic_api_key = str(data.get("anthropic_api_key", "")).strip() or os.environ.get("ANTHROPIC_API_KEY", "").strip() or None
-    ollama_base_url = str(data.get("ollama_base_url", "")).strip() or "http://localhost:11434/v1"
 
     # The run's library: --lib (which sets MDC_LIBRARY), else the config's.
     raw_library = os.environ.get("MDC_LIBRARY", "").strip() or str(data.get("library_path", "")).strip()
@@ -130,9 +119,7 @@ def load_config() -> AppConfig:
     return AppConfig(
         model=model,
         system_prompt=system_prompt,
-        openai_api_key=openai_api_key,
         anthropic_api_key=anthropic_api_key,
-        ollama_base_url=ollama_base_url,
         library_path=library_path,
         index_model=index_model,
         user_names=user_names,

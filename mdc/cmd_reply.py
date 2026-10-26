@@ -5,8 +5,8 @@ import sys
 import time
 from pathlib import Path
 
-from mdc.assets import build_anthropic_input, build_chat_input, build_response_input, collect_local_assets
-from mdc.config import _default_assistant_name, load_config
+from mdc.assets import build_anthropic_input, collect_local_assets
+from mdc.config import ASSISTANT_NAME, load_config
 from mdc.edit_tools import create_document_file
 from mdc.form import fix_section_spacing
 from mdc.transcript import (
@@ -49,14 +49,6 @@ _ANTHROPIC_PRICING: dict[str, tuple[float, float]] = {
     "claude-haiku-4-5":  ( 1.00,  5.00),
     "claude-haiku-3-5":  ( 0.80,  4.00),
 }
-
-_OPENAI_PRICING: dict[str, tuple[float, float]] = {
-    "gpt-4o-mini": (0.15,  0.60),
-    "gpt-4o":      (2.50, 10.00),
-    "o3":          (10.0, 40.00),
-    "o4-mini":     (1.10,  4.40),
-}
-
 
 class _LibraryTermNotFoundError(Exception):
     def __init__(self, terms: list[str]) -> None:
@@ -106,20 +98,6 @@ def _print_anthropic_usage(model: str, reply) -> None:
     else:
         parts.append("cost=unknown model")
 
-    print(f"\n  {' | '.join(parts)}")
-
-
-def _print_openai_usage(model: str, reply) -> None:
-    if reply.input_tokens is None:
-        return
-    rates = _lookup_price(model, _OPENAI_PRICING)
-    parts = [f"in={reply.input_tokens:,}", f"out={reply.output_tokens:,}"]
-    if rates:
-        in_rate, out_rate = rates
-        cost = reply.input_tokens * in_rate / 1_000_000 + reply.output_tokens * out_rate / 1_000_000
-        parts.append(_format_cost(cost))
-    else:
-        parts.append("cost=unknown model")
     print(f"\n  {' | '.join(parts)}")
 
 
@@ -389,96 +367,6 @@ def _reply_anthropic(
     return asset_prefix + reply.text
 
 
-def _reply_ollama(
-    transcript,
-    config,
-    path: Path,
-    model: str,
-    verbose: bool,
-    status,
-) -> str:
-    from mdc.ollama_client import OllamaChatClient
-
-    ollama_model = model.removeprefix("ollama/")
-    client = OllamaChatClient(model=ollama_model, base_url=config.ollama_base_url)
-    messages = build_chat_input(transcript, config.system_prompt, path)
-    status(f"Requesting reply from Ollama model '{ollama_model}' at {config.ollama_base_url}...")
-    status("Streaming reply:")
-    reply = client.generate_reply(messages, on_delta=_print_reply_delta)
-    return reply.text
-
-
-def _reply_openai(
-    transcript,
-    config,
-    path: Path,
-    model: str,
-    reasoning_effort: str | None,
-    verbose: bool,
-    status,
-) -> str:
-    from mdc.openai_client import OpenAIChatClient
-
-    client = OpenAIChatClient(
-        model=model,
-        api_key=config.openai_api_key,
-        reasoning_effort=reasoning_effort,
-    )
-    status(f"Requesting reply from OpenAI model '{model}'...")
-    cache_hit_assets: dict[Path, object] = {}
-
-    def build_messages() -> tuple[list[dict[str, object]], int, int]:
-        asset_cache_hits = 0
-        asset_cache_misses = 0
-        cache_hit_assets.clear()
-
-        def resolve_asset_file_id(asset) -> str:
-            nonlocal asset_cache_hits, asset_cache_misses
-            resolved = client.ensure_asset_file(asset)
-            if resolved.cache_hit:
-                asset_cache_hits += 1
-                cache_hit_assets[asset.path] = asset
-                status(f"Asset cache hit: {asset.raw_target}")
-            else:
-                asset_cache_misses += 1
-                status(f"Asset cache miss: {asset.raw_target}")
-            return resolved.file_id
-
-        messages = build_response_input(
-            transcript,
-            config.system_prompt,
-            path,
-            resolve_file_id=resolve_asset_file_id,
-        )
-        if asset_cache_hits or asset_cache_misses:
-            status(f"Resolved asset uploads: {asset_cache_hits} cache hit(s), {asset_cache_misses} cache miss(es).")
-        return messages, asset_cache_hits, asset_cache_misses
-
-    messages, asset_cache_hits, _asset_cache_misses = build_messages()
-    status("Streaming reply:")
-    try:
-        reply = client.generate_reply(messages, on_delta=_print_reply_delta)
-    except Exception as exc:
-        if not asset_cache_hits or not cache_hit_assets or not client.is_retriable_asset_error(exc):
-            raise
-
-        status("Cached OpenAI asset expired or was deleted; retrying with fresh upload(s)...")
-        for asset in cache_hit_assets.values():
-            client.invalidate_asset_file(asset)
-
-        messages, _, _ = build_messages()
-        status("Streaming reply:")
-        reply = client.generate_reply(messages, on_delta=_print_reply_delta)
-
-    if verbose:
-        _print_openai_usage(model, reply)
-    assets_by_turn = collect_local_assets(transcript, path)
-    pending_index = len(transcript.turns) - 1
-    pending_assets = assets_by_turn.get(pending_index, ())
-    asset_prefix = "".join(f"[asset: {a.path.name}]\n" for a in pending_assets)
-    return asset_prefix + reply.text
-
-
 def _run_reply_watch(
     path: Path,
     model: str | None = None,
@@ -491,7 +379,10 @@ def _run_reply_watch(
     if not effective_model:
         print("Error: no model specified. Pass --model or set 'model' in config.toml.")
         return 1
-    assistant_name = _default_assistant_name(effective_model)
+    if not effective_model.startswith("claude-"):
+        print(f"Error: mdc uses Anthropic models (claude-*), not '{effective_model}'.")
+        return 1
+    assistant_name = ASSISTANT_NAME
 
     def noop(_msg: str) -> None:
         pass
@@ -510,18 +401,10 @@ def _run_reply_watch(
 
         print("Change detected, replying...", flush=True)
         try:
-            if effective_model.startswith("claude-"):
-                reply_text = _reply_anthropic(transcript, config, path, effective_model,
-                                              reasoning_effort=reasoning_effort,
-                                              verbose=verbose, status=noop,
-                                              web=web)
-            elif effective_model.startswith("ollama/"):
-                reply_text = _reply_ollama(transcript, config, path, effective_model,
-                                           verbose=verbose, status=noop)
-            else:
-                reply_text = _reply_openai(transcript, config, path, effective_model,
-                                           reasoning_effort=reasoning_effort,
-                                           verbose=verbose, status=noop)
+            reply_text = _reply_anthropic(transcript, config, path, effective_model,
+                                          reasoning_effort=reasoning_effort,
+                                          verbose=verbose, status=noop,
+                                          web=web)
 
             if not reply_text.endswith("\n"):
                 sys.stdout.write("\n")
@@ -577,7 +460,10 @@ def run_reply(
     if not effective_model:
         print("Error: no model specified. Pass --model or set 'model' in config.toml.")
         return 1
-    assistant_name = _default_assistant_name(effective_model)
+    if not effective_model.startswith("claude-"):
+        print(f"Error: mdc uses Anthropic models (claude-*), not '{effective_model}'.")
+        return 1
+    assistant_name = ASSISTANT_NAME
 
     from mdc.library import is_library_transcript
     if not is_library_transcript(text, config.user_names, config.llm_names):
@@ -596,36 +482,22 @@ def run_reply(
             create_document_file(document, transcript.preamble.title, transcript.preamble.date)
             print(f"Created '{document.name}'.")
 
-    if effective_model.startswith("claude-"):
-        try:
-            reply_text = _reply_anthropic(
-                transcript, config, path, effective_model,
-                reasoning_effort=reasoning_effort,
-                verbose=verbose,
-                status=status,
-                library=library,
-                terms=terms or [],
-                strict=strict,
-                web=web,
-                edit=edit,
-            )
-        except _LibraryTermNotFoundError as exc:
-            missing = ", ".join(f'"{t}"' for t in exc.terms)
-            print(f"\nAborted: library term(s) not found: {missing}. Update KEYS.md and re-run.")
-            return 1
-    elif effective_model.startswith("ollama/"):
-        reply_text = _reply_ollama(
-            transcript, config, path, effective_model,
-            verbose=verbose,
-            status=status,
-        )
-    else:
-        reply_text = _reply_openai(
+    try:
+        reply_text = _reply_anthropic(
             transcript, config, path, effective_model,
             reasoning_effort=reasoning_effort,
             verbose=verbose,
             status=status,
+            library=library,
+            terms=terms or [],
+            strict=strict,
+            web=web,
+            edit=edit,
         )
+    except _LibraryTermNotFoundError as exc:
+        missing = ", ".join(f'"{t}"' for t in exc.terms)
+        print(f"\nAborted: library term(s) not found: {missing}. Update KEYS.md and re-run.")
+        return 1
 
     if not reply_text.endswith("\n"):
         sys.stdout.write("\n")

@@ -57,51 +57,6 @@ def collect_local_assets(transcript: Transcript, transcript_path: Path) -> dict[
     return assets_by_turn
 
 
-def build_response_input(
-    transcript: Transcript,
-    system_prompt: str,
-    transcript_path: Path,
-    resolve_file_id: Callable[[LocalAssetReference], str] | None = None,
-) -> list[dict[str, object]]:
-    assets_by_turn = collect_local_assets(transcript, transcript_path)
-    messages: list[dict[str, object]] = [{"role": "system", "content": system_prompt}]
-    if transcript.references:
-        messages.append({"role": "system", "content": "Accumulated references (do not repeat these in your reply — only return new references not already listed here):\n" + "\n".join(transcript.references)})
-
-    for index, turn in enumerate(transcript.turns):
-        role = "assistant" if turn.is_assistant else "user"
-        if turn.is_assistant:
-            messages.append(
-                {
-                    "role": role,
-                    "content": turn.content.strip(),
-                }
-            )
-            continue
-
-        content_parts: list[dict[str, object]] = [
-            {
-                "type": "input_text",
-                "text": f"{turn.speaker}:\n{turn.content.strip()}",
-            }
-        ]
-        for asset in assets_by_turn.get(index, ()):
-            content_parts.extend(_build_asset_parts(asset, resolve_file_id=resolve_file_id))
-
-        messages.append(
-            {
-                "type": "message",
-                "role": role,
-                "content": content_parts,
-            }
-        )
-
-    if len(transcript.turns) > 1:
-        messages.append({"role": "system", "content": system_prompt})
-
-    return messages
-
-
 def _collect_assets_from_text(text: str, scope: "_AssetScope", seen_paths: set[Path] | None = None) -> list[LocalAssetReference]:
     if seen_paths is None:
         seen_paths = set()
@@ -272,58 +227,6 @@ def build_anthropic_input(
     return system_blocks, messages
 
 
-def build_chat_input(
-    transcript: Transcript,
-    system_prompt: str,
-    transcript_path: Path,
-) -> list[dict[str, object]]:
-    """Build messages in OpenAI Chat Completions format (for Ollama / compatible endpoints)."""
-    assets_by_turn = collect_local_assets(transcript, transcript_path)
-    messages: list[dict[str, object]] = [{"role": "system", "content": system_prompt}]
-    if transcript.references:
-        messages.append({"role": "system", "content": "Accumulated references (do not repeat these in your reply — only return new references not already listed here):\n" + "\n".join(transcript.references)})
-
-    for index, turn in enumerate(transcript.turns):
-        role = "assistant" if turn.is_assistant else "user"
-        if turn.is_assistant:
-            messages.append({"role": role, "content": turn.content.strip()})
-            continue
-
-        assets = assets_by_turn.get(index, ())
-        if not assets:
-            messages.append({"role": role, "content": f"{turn.speaker}:\n{turn.content.strip()}"})
-        else:
-            content_parts: list[dict[str, object]] = [
-                {"type": "text", "text": f"{turn.speaker}:\n{turn.content.strip()}"}
-            ]
-            for asset in assets:
-                content_parts.extend(_build_chat_asset_parts(asset))
-            messages.append({"role": role, "content": content_parts})
-
-    return messages
-
-
-def _build_chat_asset_parts(asset: LocalAssetReference) -> list[dict[str, object]]:
-    descriptor: dict[str, object] = {"type": "text", "text": f"Local attachment: {asset.raw_target}"}
-    if asset.kind in ("markdown", "text", "rtf"):
-        text = asset.path.read_text(encoding="utf-8")
-        return [
-            descriptor,
-            {"type": "text", "text": f"--- Begin {asset.path.name} ---\n{text.strip()}\n--- End {asset.path.name} ---"},
-        ]
-    if asset.kind == "image":
-        media_type = IMAGE_MEDIA_TYPES[asset.path.suffix.lower()]
-        return [
-            descriptor,
-            {"type": "image_url", "image_url": {"url": _to_data_url(media_type, asset.path.read_bytes())}},
-        ]
-    if asset.kind == "pdf":
-        raise TranscriptError(
-            f"PDF asset '{asset.raw_target}' is not supported for Ollama/chat-completions models."
-        )
-    raise AssertionError(f"Unexpected asset kind: {asset.kind}")
-
-
 def _build_anthropic_asset_parts(asset: LocalAssetReference, cache: bool = True, file_id: str | None = None) -> list[dict[str, object]]:
     descriptor: dict[str, object] = {"type": "text", "text": f"Local attachment: {asset.raw_target}"}
     cc: dict[str, object] = {"cache_control": _CACHE_CONTROL} if cache else {}
@@ -352,43 +255,3 @@ def _build_anthropic_asset_parts(asset: LocalAssetReference, cache: bool = True,
         ]
     raise AssertionError(f"Unexpected asset kind: {asset.kind}")
 
-
-def _build_asset_parts(
-    asset: LocalAssetReference,
-    resolve_file_id: Callable[[LocalAssetReference], str] | None = None,
-) -> list[dict[str, object]]:
-    descriptor = {
-        "type": "input_text",
-        "text": f"Local attachment: {asset.raw_target}",
-    }
-    file_id = resolve_file_id(asset) if resolve_file_id is not None else None
-    if asset.kind == "markdown":
-        if file_id is not None:
-            return [descriptor, {"type": "input_file", "file_id": file_id}]
-        text = asset.path.read_text(encoding="utf-8")
-        return [descriptor, {"type": "input_text", "text": f"--- Begin {asset.path.name} ---\n{text.strip()}\n--- End {asset.path.name} ---"}]
-    if asset.kind == "text":
-        if file_id is not None:
-            return [descriptor, {"type": "input_file", "file_id": file_id}]
-        text = asset.path.read_text(encoding="utf-8")
-        return [descriptor, {"type": "input_text", "text": f"--- Begin {asset.path.name} ---\n{text.strip()}\n--- End {asset.path.name} ---"}]
-    if asset.kind == "rtf":
-        if file_id is not None:
-            return [descriptor, {"type": "input_file", "file_id": file_id}]
-        text = asset.path.read_text(encoding="utf-8")
-        return [descriptor, {"type": "input_text", "text": f"--- Begin {asset.path.name} ---\n{text.strip()}\n--- End {asset.path.name} ---"}]
-    if asset.kind == "image":
-        if file_id is not None:
-            return [descriptor, {"type": "input_image", "detail": "auto", "file_id": file_id}]
-        media_type = IMAGE_MEDIA_TYPES[asset.path.suffix.lower()]
-        return [descriptor, {"type": "input_image", "detail": "auto", "image_url": _to_data_url(media_type, asset.path.read_bytes())}]
-    if asset.kind == "pdf":
-        if file_id is not None:
-            return [descriptor, {"type": "input_file", "file_id": file_id}]
-        return [descriptor, {"type": "input_file", "filename": asset.path.name, "file_data": _to_data_url(PDF_MEDIA_TYPE, asset.path.read_bytes())}]
-    raise AssertionError(f"Unexpected asset kind: {asset.kind}")
-
-
-def _to_data_url(media_type: str, payload: bytes) -> str:
-    encoded = base64.b64encode(payload).decode("ascii")
-    return f"data:{media_type};base64,{encoded}"

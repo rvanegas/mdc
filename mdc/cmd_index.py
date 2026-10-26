@@ -141,39 +141,30 @@ def run_index(refs_only: bool = False, reprocess_all: bool = False, verbose: boo
 
     if not refs_only:
         effective_model = config.index_model
-        if effective_model.startswith("claude-"):
-            from mdc.anthropic_client import AnthropicChatClient
-            client = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
-            rates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
+        if not effective_model.startswith("claude-"):
+            print(f"Error: index_model must be an Anthropic model (claude-*), not '{effective_model}'.")
+            return 1
+        from mdc.anthropic_client import AnthropicChatClient
+        client = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
+        rates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
 
-            def summarize(content: str, word_count: int) -> tuple[str, list[str]]:
-                nonlocal total_cost
-                system = "You are a library indexing assistant."
-                annotated = _annotate_voice(content, config.user_names, config.llm_names)
-                messages = [{"role": "user", "content": _index_prompt(annotated, word_count)}]
-                reply = client.generate_reply(system, messages)
-                if rates:
-                    in_rate, out_rate = rates
-                    cost = (
-                        reply.input_tokens * in_rate / 1_000_000
-                        + reply.output_tokens * out_rate / 1_000_000
-                        + reply.cache_creation_tokens * in_rate * 1.25 / 1_000_000
-                        + reply.cache_read_tokens * in_rate * 0.10 / 1_000_000
-                    )
-                    total_cost += cost
-                    last_cost[0] = cost
-                return _parse_index_reply(reply.text)
-
-        else:
-            from mdc.ollama_client import OllamaChatClient
-            ollama_model = effective_model.removeprefix("ollama/")
-            client = OllamaChatClient(model=ollama_model, base_url=config.ollama_base_url)
-
-            def summarize(content: str, word_count: int) -> tuple[str, list[str]]:
-                annotated = _annotate_voice(content, config.user_names, config.llm_names)
-                messages = [{"role": "user", "content": _index_prompt(annotated, word_count)}]
-                reply = client.generate_reply(messages)
-                return _parse_index_reply(reply.text)
+        def summarize(content: str, word_count: int) -> tuple[str, list[str]]:
+            nonlocal total_cost
+            system = "You are a library indexing assistant."
+            annotated = _annotate_voice(content, config.user_names, config.llm_names)
+            messages = [{"role": "user", "content": _index_prompt(annotated, word_count)}]
+            reply = client.generate_reply(system, messages)
+            if rates:
+                in_rate, out_rate = rates
+                cost = (
+                    reply.input_tokens * in_rate / 1_000_000
+                    + reply.output_tokens * out_rate / 1_000_000
+                    + reply.cache_creation_tokens * in_rate * 1.25 / 1_000_000
+                    + reply.cache_read_tokens * in_rate * 0.10 / 1_000_000
+                )
+                total_cost += cost
+                last_cost[0] = cost
+            return _parse_index_reply(reply.text)
 
     # Need _slug_map from cli — import lazily to avoid circular
     from mdc.cli import _slug_map
@@ -273,32 +264,22 @@ def run_index(refs_only: bool = False, reprocess_all: bool = False, verbose: boo
             total_batches = len(batches)
             relate_cost = 0.0
 
-            if effective_model.startswith("claude-"):
-                from mdc.anthropic_client import AnthropicChatClient
-                rclient = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
-                rrates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
+            from mdc.anthropic_client import AnthropicChatClient
+            rclient = AnthropicChatClient(model=effective_model, api_key=config.anthropic_api_key)
+            rrates = _lookup_price(effective_model, _ANTHROPIC_PRICING)
 
-                def call_model(prompt: str) -> str:
-                    nonlocal relate_cost
-                    reply = rclient.generate_reply("You are a library indexing assistant.", [{"role": "user", "content": prompt}])
-                    if rrates:
-                        in_rate, out_rate = rrates
-                        relate_cost += (
-                            reply.input_tokens * in_rate / 1_000_000
-                            + reply.output_tokens * out_rate / 1_000_000
-                            + reply.cache_creation_tokens * in_rate * 1.25 / 1_000_000
-                            + reply.cache_read_tokens * in_rate * 0.10 / 1_000_000
-                        )
-                    return reply.text
-
-            else:
-                from mdc.ollama_client import OllamaChatClient
-                rollama_model = effective_model.removeprefix("ollama/")
-                rclient = OllamaChatClient(model=rollama_model, base_url=config.ollama_base_url)
-
-                def call_model(prompt: str) -> str:
-                    reply = rclient.generate_reply([{"role": "user", "content": prompt}])
-                    return reply.text
+            def call_model(prompt: str) -> str:
+                nonlocal relate_cost
+                reply = rclient.generate_reply("You are a library indexing assistant.", [{"role": "user", "content": prompt}])
+                if rrates:
+                    in_rate, out_rate = rrates
+                    relate_cost += (
+                        reply.input_tokens * in_rate / 1_000_000
+                        + reply.output_tokens * out_rate / 1_000_000
+                        + reply.cache_creation_tokens * in_rate * 1.25 / 1_000_000
+                        + reply.cache_read_tokens * in_rate * 0.10 / 1_000_000
+                    )
+                return reply.text
 
             print(f"\nBuilding relations for {len(to_process)} of {len(all_terms)} terms "
                   f"in {total_batches} batches...")

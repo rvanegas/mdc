@@ -44,4 +44,6 @@ MANIFEST
 
 # Secrets / local config (don't commit real API keys)
 config.toml
+# The server's system-wide config holds no secrets (keys come from .env).
+!etc/config.toml
 *.local.toml

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-**MDC** is a CLI tool for managing hand-edited markdown conversation files — structured transcripts of AI conversations (Claude, GPT, Ollama). It validates, fixes, and extends these files by appending AI replies.
+**MDC** is a CLI tool for managing hand-edited markdown conversation files — structured transcripts of AI conversations (Claude; older ones also GPT). It validates, fixes, and extends these files by appending AI replies.
 
 ## Development Philosophy
 
@@ -38,7 +38,7 @@ The tool has two main pipelines: **CLI → Transcript parsing → Format validat
 - **`assets.py`** — Collects local file references from markdown links (a bare name resolves anywhere in the run's library, beside the transcript first; nothing outside the library), builds API-specific inputs with caching directives
 - **`config.py`** — Loads `config.toml` from `MDC_CONFIG_DIR` (default `~/.config/mdc`); env fallbacks for keys and service URLs; resolves the run's library (`MDC_LIBRARY`) and user names (`MDC_USER_NAMES`); builds the system prompt from a base plus the library's `SYSTEM_PROMPT.md`
 - **`library.py`** — Library indexing: scans a directory of markdown documents, generates AI summaries and index terms, writes `MANIFEST.md` and `INDEX.md`, reads `KEYS.md` for term canonicalization
-- **`anthropic_client.py`**, **`openai_client.py`**, **`ollama_client.py`** — Per-provider streaming clients
+- **`anthropic_client.py`** — the streaming model client; mdc uses Anthropic alone (OpenAI and Ollama retired 2026-10-26; `## GPT` headings are still read as LLM voice)
 
 ### Data flow for `mdc reply`
 
@@ -54,7 +54,7 @@ The tool has two main pipelines: **CLI → Transcript parsing → Format validat
 - **Streaming via callbacks** — clients accept an `on_delta` callable and print progressively
 - **`TranscriptError`** for all validation failures
 - **Anthropic prompt caching** — up to 4 cache slots; 3 are allocated to assets
-- **Asset uploads** — both clients cache remote file IDs by content (`asset_cache.py`); the OpenAI client auto-retries with fresh uploads when a cached file has expired
+- **Asset uploads** — remote file IDs are cached by content (`asset_cache.py`)
 - **Heading promotion** — `##` headings in replies are automatically promoted to `###` to avoid conflicts with the transcript structure
 
 ## Transcript Format
@@ -197,8 +197,6 @@ Users create `~/.config/mdc/config.toml`:
 ```toml
 model = "claude-sonnet-4-6"
 anthropic_api_key = "sk-ant-..."
-openai_api_key = "sk-..."
-ollama_base_url = "http://localhost:11434/v1"
 library_path = "~/notes"
-index_model = "ollama/qwen2.5:14b"
+index_model = "claude-haiku-4-5"
 ```

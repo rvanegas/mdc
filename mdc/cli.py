@@ -514,7 +514,7 @@ def build_parser() -> argparse.ArgumentParser:
     reply_parser.add_argument(
         "-m", "--model",
         default=None,
-        help="Model to use (e.g. claude-sonnet-4-6, gpt-4o). Overrides config file.",
+        help="Anthropic model to use (e.g. claude-sonnet-4-6). Overrides config file.",
     )
     reply_parser.add_argument(
         "-r", "--reasoning-effort",

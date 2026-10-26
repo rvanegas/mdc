@@ -202,7 +202,7 @@ Opens the created file(s) for editing."
 
 (defun mdc--ai-speaker-p (speaker)
   "Return non-nil if SPEAKER is a known AI assistant name."
-  (member (downcase speaker) '("claude" "gpt" "ollama")))
+  (member (downcase speaker) '("claude" "gpt")))
 
 (defun mdc--turn-speaker-p (speaker)
   "Return non-nil if SPEAKER is a conversational turn (not a structural section)."

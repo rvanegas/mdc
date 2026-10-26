@@ -182,8 +182,10 @@ master (not yet installed on the box). Reworked 2026-10-26 on
 anywhere yet (no Docker on the Mac); its first build is the first deploy.
 
 **Done:** the `mdc` A record (2026-10-25, DNS.md); the box's `~/mdc/.env`
-with `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ROXANA_API_KEY` and
-`DIANOIA_TOKEN` (2026-10-26; the token matches dianoia's `MDC_TOKEN`).
+with `ANTHROPIC_API_KEY`, `ROXANA_API_KEY` and `DIANOIA_TOKEN`
+(2026-10-26; the token matches dianoia's `MDC_TOKEN`). Its `OPENAI_API_KEY`
+goes with OpenAI, retired 2026-10-26 along with Ollama: mdc uses Anthropic
+alone.
 
 **Left, in order, each on its own go-ahead:** land `library-layout`; migrate
 the Mac; seed `rodvandur/philosophy`; install the Caddyfile; `bin/deploy`;
@@ -334,8 +336,8 @@ Phase 1's `/healthz`.
 - The editor plugins (`editors/emacs/mdc.el`, `editors/sublime/mdc.py`) keep
   shelling out to the local `mdc` and reverting the buffer. They make the
   buffer read-only while `reply` runs.
-- Then remove what the Mac no longer uses: model keys and Ollama settings in
-  `config.py`, the Mac's local `.mdc/` index state, and `cmd_diff.py`'s key
+- Then remove what the Mac no longer uses: the model key in `config.py`, the
+  Mac's local `.mdc/` index state, and `cmd_diff.py`'s key
   lookup. The server runs the same package, so the model clients themselves
   stay.
 

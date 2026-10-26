@@ -44,16 +44,14 @@ On first run, mdc writes a starter config to `~/.config/mdc/config.toml`. Edit i
 # Model used by "mdc reply". Required unless passed via --model each time.
 model = "claude-sonnet-4-6"
 
-# API keys. Can also be set via ANTHROPIC_API_KEY / OPENAI_API_KEY env vars.
+# API key. Can also be set via the ANTHROPIC_API_KEY env var.
 anthropic_api_key = "sk-ant-..."
-openai_api_key    = "sk-..."
 
 # Directory of markdown files to use as a knowledge library (see "mdc index").
 # Its SYSTEM_PROMPT.md, if any, is added to every reply's system prompt.
 library_path = "~/notes"
 
 # Model used by "mdc index". Default: claude-haiku-4-5.
-# Prefix with "ollama/" for a local model: "ollama/qwen2.5:14b".
 index_model = "claude-haiku-4-5"
 
 # Column width for paragraph wrapping in "mdc reply" edits. Default: 100.
@@ -66,8 +64,6 @@ user_names = ["YourName"]
 # Section headings treated as LLM voice.
 llm_names = ["Claude", "GPT"]
 
-# Ollama server endpoint. Default shown.
-ollama_base_url = "http://localhost:11434/v1"
 ```
 
 Run `mdc config` to print the resolved config file, cache directory, library, and the library's state directory.
@@ -105,14 +101,14 @@ Append one AI reply to a transcript. Finds the last unanswered human turn, strea
 
 ```bash
 mdc reply conversation.md
-mdc reply -m gpt-4o conversation.md
+mdc reply -m claude-opus-5-5 conversation.md
 mdc reply -v -l -t "sorting algorithms" conversation.md
 ```
 
 | Flag | Description |
 |------|-------------|
 | `path` | Path to the transcript. |
-| `-m`, `--model MODEL` | Model to use (e.g. `claude-sonnet-4-6`, `gpt-4o`, `ollama/llama3.2`). Overrides config. |
+| `-m`, `--model MODEL` | Anthropic model to use (e.g. `claude-sonnet-4-6`). Overrides config. |
 | `-r`, `--reasoning-effort` | `none` / `low` / `medium` / `high` / `xhigh`. Default: `low`. |
 | `-v`, `--verbose` | Print progress messages and token usage / cost. |
 | `-W`, `--watch` | Poll the transcript once per second and reply whenever a pending turn appears. Useful when editing in another window. |
@@ -121,9 +117,9 @@ mdc reply -v -l -t "sorting algorithms" conversation.md
 | `-t`, `--term TERM` | Pre-look up a library index term and inject the results into context before the model runs. Requires `-l`. May be repeated. |
 | `--strict` | Abort if any `-t` term is not found in the index (default: warn and proceed). |
 
-**Supported providers:** Anthropic (any `claude-*` model), OpenAI (any `gpt-*` or `o*` model), Ollama (any `ollama/<name>` model).
+**Models:** Anthropic only (any `claude-*` model). `## GPT` turns in older transcripts are still read as the model's voice.
 
-Local file references in markdown links (e.g. `[data](./data.csv)`) are collected and sent as context. Anthropic models use prompt caching; OpenAI models upload files and cache by ID.
+Local file references in markdown links (e.g. `[data](./data.csv)`) are collected and sent as context, with prompt caching. Uploaded files are cached by content, so a moved or renamed file is not uploaded again.
 
 ---
 

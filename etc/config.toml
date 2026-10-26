@@ -1,0 +1,12 @@
+# mdc's system-wide config on the server, baked into the image at
+# /etc/mdc/config.toml (MDC_CONFIG_DIR). No secrets: the keys come from the
+# box's .env. No library or user: each run names its library (--lib) and its
+# user's names (MDC_USER_NAMES). SERVER.md, *Where things live*.
+
+model = "claude-sonnet-5"
+index_model = "claude-haiku-4-5"
+llm_names = ["Claude", "GPT"]
+
+dianoia_api_url = "https://dianoia.rvanegas.co/api"
+roxana_api_url = "https://w4aocbt7pzdqrkqtk2gorjrit4.appsync-api.us-west-2.amazonaws.com/graphql"
+roxana_web_url = "https://roxana.rvanegas.co"
