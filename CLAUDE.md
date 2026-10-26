@@ -36,7 +36,7 @@ The tool has two main pipelines: **CLI → Transcript parsing → Format validat
 - **`transcript.py`** — Core parsing: splits markdown into preamble + conversational turns, detects pending human turns awaiting reply, manages reference sections
 - **`form.py`** — Enforces the 12-rule transcript format (blank lines, headers, speaker labels, reference formatting, filename derivation)
 - **`assets.py`** — Collects local file references from markdown links, validates paths stay within the transcript directory, builds API-specific inputs with caching directives
-- **`config.py`** — Loads `~/.config/mdc/config.toml`; also reads `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env vars
+- **`config.py`** — Loads `config.toml` from `MDC_CONFIG_DIR` (default `~/.config/mdc`); env fallbacks for keys and service URLs; resolves the run's library (`MDC_LIBRARY`) and user names (`MDC_USER_NAMES`); builds the system prompt from a base plus the library's `SYSTEM_PROMPT.md`
 - **`library.py`** — Library indexing: scans a directory of markdown documents, generates AI summaries and index terms, writes `MANIFEST.md` and `INDEX.md`, reads `KEYS.md` for term canonicalization
 - **`anthropic_client.py`**, **`openai_client.py`**, **`ollama_client.py`** — Per-provider streaming clients
 
@@ -95,7 +95,7 @@ Bump `version` in `pyproject.toml` before each build. The wheel filename reflect
 - **`MANIFEST.md`** — human-readable document listing with title, word count, terms, and summary per document
 - **`INDEX.md`** — inverted term index for use as `reply` context (`-i` flag)
 
-State is cached in `~/.local/state/mdc/library-index.json` and `library-terms.json`; only changed documents are re-indexed.
+State lives in the library itself, in `.mdc/` (`manifest.json`, `index.json`, `relations.json`), so each library carries its own; only changed documents are re-indexed. `scripts/migrate_library.py` moved it there from `~/.local/state/mdc`.
 
 ### KEYS.md
 
@@ -184,10 +184,11 @@ These labels are stripped before sending to the model during `reply` but are pre
 
 mdc is moving onto the `commons` box behind `mdc.rvanegas.co` (`SERVER.md`, phase by phase).
 
-- **`mdc serve`** (`server.py`) runs the FastAPI app; Phase 1 has only `GET /healthz`, reading `mdc/deployed.json` (stamped by `bin/deploy`, gitignored, `{"commit": "dev"}` when absent). `main()` dispatches `serve` before writing default config files, since the server process has no home of its own.
-- **`Dockerfile` / `docker-compose.yml`**: `python:3.13-slim` with pandoc and XeTeX, on `127.0.0.1:8001`, as uid 1000, with `/srv/mdc` mounted at `/data`. A workspace is `/data/workspaces/<user>/{home,files}`; a command runs with `HOME=…/home` and `cwd` in `files/`.
+- **Where things live.** System-wide: keys (env), the config (`MDC_CONFIG_DIR`, `etc/config.toml` in the image) and the asset cache (`MDC_CACHE_DIR`, since file IDs belong to the API key). Per run: the library (`--lib`, which sets `MDC_LIBRARY` for every `load_config()`) and the user's names (`MDC_USER_NAMES`, supplied by the client; `Prompt` is always a user heading). Per library, in its tree: `SYSTEM_PROMPT.md`, `KEYS.md`, and index state in `.mdc/`. There is no per-user config on the server; a library's id is `<user>/<library>`, its path `/data/libraries/<user>/<library>`.
+- **`mdc serve`** (`server.py`) runs the FastAPI app; Phase 1 has only `GET /healthz`, reading `mdc/deployed.json` (stamped by `bin/deploy`, gitignored, `{"commit": "dev"}` when absent). `main()` dispatches `serve` before writing a default config.
+- **`Dockerfile` / `docker-compose.yml`**: `python:3.13-slim` with pandoc and XeTeX, on `127.0.0.1:8001`, as uid 1000, with `/srv/mdc` mounted at `/data`.
 - **`bin/deploy`**: tests, rsync to `~/mdc` on the box, `docker compose up --build`, then `/healthz` on the box and at the public name. Never touches `.env` or `/srv/mdc`.
-- **`scripts/migrate_state.py`**: rewrites a staged copy of `~/.config/mdc`, `~/.local/state/mdc` and `~/.cache/mdc` for a workspace (re-roots `library_path` and asset-cache keys, strips secrets and backups from the config).
+- **`scripts/migrate_library.py`** (the data migration into `.mdc/` and `SYSTEM_PROMPT.md`) and **`scripts/rebase_cache.py`** (carries asset-cache entries to a new library root when seeding).
 
 ## Configuration
 
@@ -196,7 +197,6 @@ Users create `~/.config/mdc/config.toml`:
 model = "claude-sonnet-4-6"
 anthropic_api_key = "sk-ant-..."
 openai_api_key = "sk-..."
-system_prompt_file = "~/.config/mdc/system.md"
 ollama_base_url = "http://localhost:11434/v1"
 library_path = "~/notes"
 index_model = "ollama/qwen2.5:14b"

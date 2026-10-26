@@ -8,16 +8,26 @@ import sys
 import tomllib
 
 
-def _platform_dir(xdg_subpath: str, win_fn: str) -> Path:
+def _platform_dir(env_var: str, xdg_subpath: str, win_fn: str) -> Path:
+    override = os.environ.get(env_var, "").strip()
+    if override:
+        return Path(override).expanduser()
     if sys.platform == "win32":
         import platformdirs
         return Path(getattr(platformdirs, win_fn)("mdc", appauthor=False))
     return Path.home() / xdg_subpath / "mdc"
 
 
-_config_dir = _platform_dir(".config", "user_config_dir")
-_state_dir  = _platform_dir(".local/state", "user_state_dir")
-_cache_dir  = _platform_dir(".cache", "user_cache_dir")
+# A server sets both: one system-wide config, one cache for its API key.
+_config_dir = _platform_dir("MDC_CONFIG_DIR", ".config", "user_config_dir")
+_cache_dir  = _platform_dir("MDC_CACHE_DIR", ".cache", "user_cache_dir")
+
+# Index state lives in the library itself, so each library carries its own.
+LIBRARY_STATE_DIRNAME: Final[str] = ".mdc"
+
+# The heading for the user's turns, whoever the user is; their own names come
+# from config or, per run, from MDC_USER_NAMES.
+PROMPT_HEADING: Final[str] = "Prompt"
 
 
 def _default_assistant_name(model: str) -> str:
@@ -33,9 +43,8 @@ def _default_assistant_name(model: str) -> str:
 
 
 DEFAULT_CONFIG_PATH: Final[Path] = _config_dir / "config.toml"
-DEFAULT_SYSTEM_PROMPT_PATH: Final[Path] = _config_dir / "system.md"
 
-_FALLBACK_SYSTEM_PROMPT = (
+_BASE_SYSTEM_PROMPT = (
     "You are continuing a hand-edited markdown chat transcript. "
     "Respond helpfully to the latest human message."
 )
@@ -52,13 +61,13 @@ Year may be a single year (1989), a range (53-55), a slash pair (1781/1787), or 
 @dataclass(frozen=True)
 class AppConfig:
     model: str | None = None
-    system_prompt: str = _FALLBACK_SYSTEM_PROMPT
+    system_prompt: str = _BASE_SYSTEM_PROMPT
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434/v1"
     library_path: Path | None = None
     index_model: str = "claude-haiku-4-5"
-    user_names: tuple[str, ...] = ("Prompt", "Rodrigo")
+    user_names: tuple[str, ...] = (PROMPT_HEADING,)
     llm_names: tuple[str, ...] = ("Claude", "GPT")
     wrap_width: int = 100
     revision_retention_days: int = 7
@@ -75,10 +84,8 @@ def _write_default_config(path: Path) -> None:
     path.write_text(files("mdc").joinpath("config.example.toml").read_text(encoding="utf-8"), encoding="utf-8")
 
 
-def _write_default_system_prompt(path: Path) -> None:
-    from importlib.resources import files
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(files("mdc").joinpath("system.example.md").read_text(encoding="utf-8"), encoding="utf-8")
+def library_state_dir(library_path: Path) -> Path:
+    return library_path / LIBRARY_STATE_DIRNAME
 
 
 def load_config() -> AppConfig:
@@ -98,26 +105,24 @@ def load_config() -> AppConfig:
     anthropic_api_key = str(data.get("anthropic_api_key", "")).strip() or os.environ.get("ANTHROPIC_API_KEY", "").strip() or None
     ollama_base_url = str(data.get("ollama_base_url", "")).strip() or "http://localhost:11434/v1"
 
-    system_prompt = _load_system_prompt(DEFAULT_SYSTEM_PROMPT_PATH)
-
-    raw_library = str(data.get("library_path", "")).strip()
+    # The run's library: --lib (which sets MDC_LIBRARY), else the config's.
+    raw_library = os.environ.get("MDC_LIBRARY", "").strip() or str(data.get("library_path", "")).strip()
     library_path = Path(raw_library).expanduser().resolve() if raw_library else None
-    if library_path:
-        lib_prompt_path = library_path / "SYSTEM_PROMPT.md"
-        if lib_prompt_path.exists():
-            lib_extra = lib_prompt_path.read_text(encoding="utf-8").strip()
-            if lib_extra:
-                system_prompt = f"{system_prompt}\n\n{lib_extra}"
+    system_prompt = _build_system_prompt(library_path)
     index_model = str(data.get("index_model", "")).strip() or "claude-haiku-4-5"
 
-    user_names = tuple(str(n).strip() for n in data.get("user_names", ["Prompt", "Rodrigo"]) if str(n).strip())
+    # The client names its user per run (MDC_USER_NAMES, comma-separated);
+    # the Prompt heading is everyone's.
+    raw_names = os.environ.get("MDC_USER_NAMES", "").strip()
+    names = raw_names.split(",") if raw_names else data.get("user_names", [])
+    user_names = tuple(dict.fromkeys([PROMPT_HEADING, *(str(n).strip() for n in names if str(n).strip())]))
     llm_names  = tuple(str(n).strip() for n in data.get("llm_names",  ["Claude", "GPT"])     if str(n).strip())
     wrap_width = int(data.get("wrap_width", 100))
     revision_retention_days = int(data.get("revision_retention_days", 7))
 
     roxana_api_url = str(data.get("roxana_api_url", "")).strip() or os.environ.get("ROXANA_API_URL", "").strip() or None
     roxana_api_key = str(data.get("roxana_api_key", "")).strip() or os.environ.get("ROXANA_API_KEY", "").strip() or None
-    roxana_web_url = str(data.get("roxana_web_url", "")).strip() or None
+    roxana_web_url = str(data.get("roxana_web_url", "")).strip() or os.environ.get("ROXANA_WEB_URL", "").strip() or None
 
     dianoia_api_url = str(data.get("dianoia_api_url", "")).strip() or os.environ.get("DIANOIA_API_URL", "").strip() or None
     dianoia_token = str(data.get("dianoia_token", "")).strip() or os.environ.get("DIANOIA_TOKEN", "").strip() or None
@@ -142,11 +147,13 @@ def load_config() -> AppConfig:
     )
 
 
-def _load_system_prompt(path: Path) -> str:
-    if not path.exists():
-        base = _FALLBACK_SYSTEM_PROMPT
-    else:
-        lines = path.read_text(encoding="utf-8").splitlines()
-        content = "\n".join(line for line in lines if not line.startswith("//")).strip()
-        base = content or _FALLBACK_SYSTEM_PROMPT
-    return f"{base}\n\n{_REFERENCE_INSTRUCTION}"
+def _build_system_prompt(library_path: Path | None) -> str:
+    """The base prompt, then the library's own SYSTEM_PROMPT.md."""
+    prompt = f"{_BASE_SYSTEM_PROMPT}\n\n{_REFERENCE_INSTRUCTION}"
+    if library_path:
+        lib_prompt_path = library_path / "SYSTEM_PROMPT.md"
+        if lib_prompt_path.exists():
+            lib_extra = lib_prompt_path.read_text(encoding="utf-8").strip()
+            if lib_extra:
+                prompt = f"{prompt}\n\n{lib_extra}"
+    return prompt

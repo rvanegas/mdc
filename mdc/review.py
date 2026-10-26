@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from mdc.config import _config_dir
 
-_REVIEW_PROMPTS_DIR = Path("~/.config/mdc/review").expanduser()
+_REVIEW_PROMPTS_DIR = _config_dir / "review"
 
 _REVIEW_GUIDANCE = """\
 The documents are of different kinds. Sections headed "Claude" or "GPT" identify \
@@ -77,9 +76,6 @@ def review_path_for(doc_path: Path) -> Path:
 
 def load_review_state(lib_path: Path) -> ReviewState:
     review_files = sorted(lib_path.rglob("*.review.md"))
-    if not review_files:
-        _migrate_review_json(lib_path)
-        review_files = sorted(lib_path.rglob("*.review.md"))
     doc_by_name: dict[str, list[Path]] | None = None
     entries = []
     for rp in review_files:
@@ -122,29 +118,6 @@ def _relocate_orphan_review(rp: Path, source_name: str, doc_by_name: dict[str, l
         return new_rp
     except OSError:
         return None
-
-
-def _migrate_review_json(lib_path: Path) -> None:
-    from mdc.config import _state_dir
-    path_hash = hashlib.sha256(str(lib_path).encode()).hexdigest()[:8]
-    old_json = _state_dir / f"review-{path_hash}.json"
-    if not old_json.exists():
-        return
-    try:
-        data = json.loads(old_json.read_text(encoding="utf-8"))
-        # Map basename → actual path so we place .review.md next to the doc even in subdirs.
-        actual_paths: dict[str, Path] = {p.name: p for p in lib_path.rglob("*.md")}
-        for r in data.get("doc_reviews") or []:
-            text = r.get("text", "")
-            fn = r.get("filename", "")
-            if not text or not fn:
-                continue
-            doc_path = actual_paths.get(fn, lib_path / fn)
-            rp = review_path_for(doc_path)
-            rp.write_text(text, encoding="utf-8")
-        old_json.unlink()
-    except (json.JSONDecodeError, OSError):
-        pass
 
 
 def save_doc_review(review_path: Path, text: str) -> None:

@@ -10,7 +10,7 @@ from mdc.review import sanitize_for_pandoc
 from mdc.text_utils import _format_cost, _format_total, _lookup_price, _print_reply_delta
 
 
-def run_review(library_path: str | None, reset: bool, theme: str | None = None, selection: bool = False, doc_start: int | None = None, docs: bool = False, evaluate: bool = False, pass2: bool = False, final: bool = False, afterword: bool = False, intro: bool = False, compile_: bool = False, action: str | None = None, action_themes: list[str] | None = None) -> int:
+def run_review(reset: bool, theme: str | None = None, selection: bool = False, doc_start: int | None = None, docs: bool = False, evaluate: bool = False, pass2: bool = False, final: bool = False, afterword: bool = False, intro: bool = False, compile_: bool = False, action: str | None = None, action_themes: list[str] | None = None) -> int:
     import sys
     from mdc.anthropic_client import AnthropicChatClient
     from mdc.review import (
@@ -59,11 +59,10 @@ def run_review(library_path: str | None, reset: bool, theme: str | None = None, 
         print("Error: mdc review only supports Anthropic (claude-*) models.")
         return 1
 
-    raw_path = library_path or (str(config.library_path) if config.library_path else None)
-    if not raw_path:
-        print("Error: no library path. Pass a path or set 'library_path' in config.")
+    lib_path = config.library_path
+    if not lib_path:
+        print("Error: no library. Pass --lib or set 'library_path' in config.")
         return 1
-    lib_path = Path(raw_path).expanduser().resolve()
     if not lib_path.is_dir():
         print(f"Error: '{lib_path}' is not a directory.")
         return 1

@@ -12,6 +12,7 @@ COPY mdc/ mdc/
 # The test extra so `pytest tests/` runs in the image (SERVER.md's smoke test).
 RUN pip install --no-cache-dir ".[test]"
 COPY tests/ tests/
+COPY etc/config.toml /etc/mdc/config.toml
 
 EXPOSE 8001
 CMD ["mdc", "serve", "--host", "0.0.0.0", "--port", "8001"]

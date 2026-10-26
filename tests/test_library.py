@@ -19,12 +19,6 @@ from mdc.library import (
 )
 
 
-@pytest.fixture(autouse=True)
-def isolated_state(tmp_path, monkeypatch):
-    monkeypatch.setattr(mdc.library, "_STATE_PATH", tmp_path / "library-manifest.json")
-    monkeypatch.setattr(mdc.library, "_TERMS_STATE_PATH", tmp_path / "library-index.json")
-
-
 def _entry(rel_path="a.md", title="A", wc=100, summary="Summary of A.", terms=("foo", "bar")):
     return DocEntry(rel_path=rel_path, title=title, word_count=wc, summary=summary, terms=terms)
 

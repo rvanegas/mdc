@@ -166,21 +166,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # The server has no user home of its own; each workspace brings one.
     if args.command == "serve":
         from mdc.server import run_serve
         return run_serve(host=args.host, port=args.port)
 
-    from mdc.config import DEFAULT_CONFIG_PATH, DEFAULT_SYSTEM_PROMPT_PATH, _write_default_config, _write_default_system_prompt
+    from mdc.config import DEFAULT_CONFIG_PATH, _write_default_config
     if not DEFAULT_CONFIG_PATH.exists():
         _write_default_config(DEFAULT_CONFIG_PATH)
-    if not DEFAULT_SYSTEM_PROMPT_PATH.exists():
-        _write_default_system_prompt(DEFAULT_SYSTEM_PROMPT_PATH)
+
+    # The run's library, for every load_config() below.
+    if args.lib:
+        os.environ["MDC_LIBRARY"] = str(Path(args.lib).expanduser().resolve())
 
     try:
         if args.command == "review":
             return run_review(
-                library_path=args.lib,
                 reset=args.reset,
                 theme=args.theme,
                 selection=args.selection,
@@ -197,15 +197,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "index":
             return run_index(
-                library_path=args.lib,
                 refs_only=args.refs_only_all,
                 reprocess_all=args.all,
                 verbose=args.verbose,
             )
         if args.command == "new":
             config = load_config()
-            lib = Path(args.lib).expanduser().resolve() if args.lib else config.library_path
-            return run_new(" ".join(args.title_words) or None, edit=args.edit, library_path=lib)
+            return run_new(" ".join(args.title_words) or None, edit=args.edit, library_path=config.library_path)
         if args.command == "check":
             if _require_bare(args.path):
                 return 1
@@ -222,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
                 if resolved is None:
                     return 1
                 paths.append(resolved)
-            return run_validate(paths, force_transcript=args.transcript, library_path=args.lib)
+            return run_validate(paths, force_transcript=args.transcript)
         if args.command == "fix":
             paths = []
             for p in args.paths:
@@ -252,7 +250,6 @@ def main(argv: list[str] | None = None) -> int:
                 terms=args.terms,
                 strict=args.strict,
                 web=args.web,
-                library_path=args.lib,
                 edit=args.edit,
             )
         if args.command == "diff":
@@ -260,8 +257,7 @@ def main(argv: list[str] | None = None) -> int:
             if extra and extra[0] == "--":
                 extra = extra[1:]
             config = load_config()
-            lib_path = Path(args.lib).expanduser().resolve() if args.lib else config.library_path
-            _rev_dir = (lib_path / "REVISIONS") if lib_path else None
+            _rev_dir = (config.library_path / "REVISIONS") if config.library_path else None
             if _require_bare(args.path):
                 return 1
             path = _resolve_path_abbrev(args.path, Path.cwd(), secondary_priority=("document", "chat", "argument"))
@@ -349,7 +345,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--lib",
         default=None,
         metavar="PATH",
-        help="Override the library_path from config for this invocation.",
+        help="The library for this invocation, overriding MDC_LIBRARY and library_path from config.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -699,11 +695,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_config() -> int:
-    from mdc.config import DEFAULT_CONFIG_PATH, DEFAULT_SYSTEM_PROMPT_PATH, _cache_dir, _state_dir
+    from mdc.config import DEFAULT_CONFIG_PATH, _cache_dir, library_state_dir
+    config = load_config()
     print(f"Config file:   {DEFAULT_CONFIG_PATH}")
-    print(f"System prompt: {DEFAULT_SYSTEM_PROMPT_PATH}")
-    print(f"State dir:     {_state_dir}")
     print(f"Cache dir:     {_cache_dir}")
+    print(f"Library:       {config.library_path or '(none)'}")
+    if config.library_path:
+        print(f"Library state: {library_state_dir(config.library_path)}")
     return 0
 
 
@@ -808,13 +806,12 @@ def run_check(path: Path) -> int:
     return 0
 
 
-def run_validate(paths: list[Path], force_transcript: bool = False, library_path: str | None = None) -> int:
+def run_validate(paths: list[Path], force_transcript: bool = False) -> int:
     from mdc.library import is_library_transcript, resolve_title
     from mdc.review import list_review_docs
 
     config = load_config()
-    raw_lib = Path(library_path).expanduser().resolve() if library_path else config.library_path
-    lib = raw_lib if raw_lib and raw_lib.is_dir() else None
+    lib = config.library_path if config.library_path and config.library_path.is_dir() else None
     doc_order = {p.name: i for i, p in enumerate(list_review_docs(lib))} if lib else {}
 
     any_errors = False

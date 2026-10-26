@@ -172,7 +172,6 @@ def _reply_anthropic(
     terms: list[str] | None = None,
     strict: bool = False,
     web: bool = False,
-    library_path: str | None = None,
     edit: bool = False,
 ) -> str:
     from mdc.anthropic_client import AnthropicChatClient
@@ -183,10 +182,9 @@ def _reply_anthropic(
     library_context = None
 
     if library:
-        _raw_lib = Path(library_path).expanduser().resolve() if library_path else config.library_path
-        if not _raw_lib or not _raw_lib.is_dir():
-            raise ValueError("--library requires library_path to be set in config or via --lib.")
-        lib = _raw_lib
+        lib = config.library_path
+        if not lib or not lib.is_dir():
+            raise ValueError("--library requires a library: pass --lib or set library_path in config.")
         tools = LIBRARY_TOOLS
 
         try:
@@ -487,7 +485,6 @@ def _run_reply_watch(
     reasoning_effort: str | None = None,
     verbose: bool = False,
     web: bool = False,
-    library_path: str | None = None,
 ) -> int:
     config = load_config()
     effective_model = model or config.model
@@ -530,8 +527,7 @@ def _run_reply_watch(
                 sys.stdout.write("\n")
             sys.stdout.flush()
 
-            _lib = Path(library_path).expanduser().resolve() if library_path else config.library_path
-            _rev_dir = (_lib / "REVISIONS") if _lib else None
+            _rev_dir = (config.library_path / "REVISIONS") if config.library_path else None
             _save_reply(path, text, reply_text, assistant_name, transcript.pending_turn.heading, revisions_dir=_rev_dir)
             if _rev_dir:
                 _prune_revisions(_rev_dir, config.revision_retention_days)
@@ -552,7 +548,6 @@ def run_reply(
     terms: list[str] | None = None,
     strict: bool = False,
     web: bool = False,
-    library_path: str | None = None,
     edit: bool = False,
 ) -> int:
     if path.suffix.lower() != ".md":
@@ -569,7 +564,7 @@ def run_reply(
         path = path.rename(chat)
 
     if watch:
-        return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort, verbose=verbose, web=web, library_path=library_path)
+        return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort, verbose=verbose, web=web)
 
     def status(msg: str) -> None:
         if verbose:
@@ -612,7 +607,6 @@ def run_reply(
                 terms=terms or [],
                 strict=strict,
                 web=web,
-                library_path=library_path,
                 edit=edit,
             )
         except _LibraryTermNotFoundError as exc:
@@ -637,8 +631,7 @@ def run_reply(
         sys.stdout.write("\n")
     sys.stdout.flush()
     status("Appending to transcript...")
-    _lib = Path(library_path).expanduser().resolve() if library_path else config.library_path
-    _rev_dir = (_lib / "REVISIONS") if _lib else None
+    _rev_dir = (config.library_path / "REVISIONS") if config.library_path else None
     _save_reply(path, text, reply_text, assistant_name, transcript.pending_turn.heading, revisions_dir=_rev_dir)
     if _rev_dir:
         _prune_revisions(_rev_dir, config.revision_retention_days)

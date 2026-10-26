@@ -36,11 +36,19 @@ INTRODUCTION_FILENAME = "INTRODUCTION.md"
 APPENDIX_FILENAME = "APPENDIX.md"
 COMPILED_FILENAME = "COMPILED.md"
 REVIEWS_FILENAME = "REVIEWS.md"
-from mdc.config import _state_dir as _mdc_state_dir
-_STATE_DIR = _mdc_state_dir
-_STATE_PATH = _STATE_DIR / "library-manifest.json"
-_TERMS_STATE_PATH = _STATE_DIR / "library-index.json"
-_RELATIONS_STATE_PATH = _STATE_DIR / "library-relations.json"
+from mdc.config import library_state_dir
+
+
+def _manifest_state_path(library_path: Path) -> Path:
+    return library_state_dir(library_path) / "manifest.json"
+
+
+def _terms_state_path(library_path: Path) -> Path:
+    return library_state_dir(library_path) / "index.json"
+
+
+def _relations_state_path(library_path: Path) -> Path:
+    return library_state_dir(library_path) / "relations.json"
 
 _REFS_SECTION_RE = re.compile(r"^## References\s*$", re.MULTILINE)
 _RELATED_SECTION_RE = re.compile(r"^## Related\s*$", re.MULTILINE)
@@ -286,12 +294,11 @@ def write_index(library_path: Path, entries: list[DocEntry]) -> list[str]:
                 bucket.append(file_entry)
 
     # JSON
-    _TERMS_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _terms_state_path(library_path).parent.mkdir(parents=True, exist_ok=True)
     data = {
-        "library_path": str(library_path),
         "terms": {t: files for t, files in sorted(inverted.items(), key=lambda x: x[0].casefold())},
     }
-    _TERMS_STATE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _terms_state_path(library_path).write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     # Markdown mirror
     relations = load_relations(library_path)
@@ -392,13 +399,11 @@ def _entry_from_dict(d: dict) -> DocEntry:
 
 def _load_state(library_path: Path) -> dict[str, DocEntry]:
     """Return entries_by_path from the JSON state file for library_path."""
-    if not _STATE_PATH.exists():
+    if not _manifest_state_path(library_path).exists():
         return {}
     try:
-        data = json.loads(_STATE_PATH.read_text(encoding="utf-8"))
+        data = json.loads(_manifest_state_path(library_path).read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return {}
-    if data.get("library_path") != str(library_path):
         return {}
     entries_by_path: dict[str, DocEntry] = {}
     for item in data.get("entries", []):
@@ -411,12 +416,11 @@ def _load_state(library_path: Path) -> dict[str, DocEntry]:
 
 
 def _save_state(library_path: Path, entries_by_path: dict[str, DocEntry]) -> None:
-    _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _manifest_state_path(library_path).parent.mkdir(parents=True, exist_ok=True)
     data = {
-        "library_path": str(library_path),
         "entries": [_entry_to_dict(e) for e in entries_by_path.values()],
     }
-    _STATE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _manifest_state_path(library_path).write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def load_entries(library_path: Path) -> list[DocEntry]:
@@ -445,46 +449,40 @@ def cooccurrence_relations(library_path: Path, min_count: int = 2) -> dict[str, 
 
 def load_terms(library_path: Path) -> set[str]:
     """Load the set of term keys from the terms JSON state file."""
-    if not _TERMS_STATE_PATH.exists():
+    if not _terms_state_path(library_path).exists():
         return set()
     try:
-        data = json.loads(_TERMS_STATE_PATH.read_text(encoding="utf-8"))
+        data = json.loads(_terms_state_path(library_path).read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return set()
-    if data.get("library_path") != str(library_path):
         return set()
     return set(data.get("terms", {}).keys())
 
 
 def load_relations(library_path: Path) -> dict[str, list[str]]:
     """Load the relations map from the relations state file."""
-    if not _RELATIONS_STATE_PATH.exists():
+    if not _relations_state_path(library_path).exists():
         return {}
     try:
-        data = json.loads(_RELATIONS_STATE_PATH.read_text(encoding="utf-8"))
+        data = json.loads(_relations_state_path(library_path).read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return {}
-    if data.get("library_path") != str(library_path):
         return {}
     return data.get("relations", {})
 
 
 def save_relations(library_path: Path, relations: dict[str, list[str]]) -> None:
     """Write the relations map to the relations state file."""
-    _RELATIONS_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    data = {"library_path": str(library_path), "relations": relations}
-    _RELATIONS_STATE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _relations_state_path(library_path).parent.mkdir(parents=True, exist_ok=True)
+    data = {"relations": relations}
+    _relations_state_path(library_path).write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def prune_relations(library_path: Path, removed_terms: set[str]) -> None:
     """Remove deleted terms from the relations map."""
-    if not removed_terms or not _RELATIONS_STATE_PATH.exists():
+    if not removed_terms or not _relations_state_path(library_path).exists():
         return
     try:
-        data = json.loads(_RELATIONS_STATE_PATH.read_text(encoding="utf-8"))
+        data = json.loads(_relations_state_path(library_path).read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return
-    if data.get("library_path") != str(library_path):
         return
     relations: dict[str, list[str]] = data.get("relations", {})
     if not relations:
@@ -494,7 +492,7 @@ def prune_relations(library_path: Path, removed_terms: set[str]) -> None:
     for term in list(relations):
         relations[term] = [r for r in relations[term] if r not in removed_terms]
     data["relations"] = relations
-    _RELATIONS_STATE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _relations_state_path(library_path).write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def _sanitize_term(term: str) -> tuple[str, str | None]:
@@ -747,13 +745,11 @@ def resolve_title(library_path: Path, title: str) -> str | None:
 
 def lookup_term(library_path: Path, term: str, exclude: str | None = None) -> str:
     """Look up a canonical index term; return matching docs and related terms."""
-    if not _TERMS_STATE_PATH.exists():
+    if not _terms_state_path(library_path).exists():
         return f"Term not found: '{term}'"
     try:
-        data = json.loads(_TERMS_STATE_PATH.read_text(encoding="utf-8"))
+        data = json.loads(_terms_state_path(library_path).read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return f"Term not found: '{term}'"
-    if data.get("library_path") != str(library_path):
         return f"Term not found: '{term}'"
     term_map = data.get("terms", {})
     alias_map, _, _ = parse_keys_md(library_path)

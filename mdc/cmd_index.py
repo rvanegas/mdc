@@ -118,18 +118,16 @@ def _relate_prompt(id_to_term: dict[int, str], batch_ids: list[int]) -> str:
     )
 
 
-def run_index(library_path: str | None, refs_only: bool = False, reprocess_all: bool = False, verbose: bool = False) -> int:
+def run_index(refs_only: bool = False, reprocess_all: bool = False, verbose: bool = False) -> int:
     from mdc.library import MANIFEST_FILENAME, build_index
     from mdc.review import sanitize_for_pandoc
 
     config = load_config()
 
-    raw_path = library_path or (str(config.library_path) if config.library_path else None)
-    if not raw_path:
-        print("Error: no library path specified. Pass a path or set 'library_path' in config.")
+    lib_path = config.library_path
+    if not lib_path:
+        print("Error: no library. Pass --lib or set 'library_path' in config.")
         return 1
-
-    lib_path = Path(raw_path).expanduser().resolve()
     if not lib_path.is_dir():
         print(f"Error: '{lib_path}' is not a directory.")
         return 1

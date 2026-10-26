@@ -36,7 +36,7 @@ pip install -e .
 
 ## Configuration
 
-On first run, mdc writes a starter config to `~/.config/mdc/config.toml` and a starter system prompt to `~/.config/mdc/system.md`. Edit them to suit your setup.
+On first run, mdc writes a starter config to `~/.config/mdc/config.toml`. Edit it to suit your setup. `MDC_CONFIG_DIR` and `MDC_CACHE_DIR` move the config and cache directories elsewhere (the server sets both).
 
 ```toml
 # ~/.config/mdc/config.toml
@@ -48,10 +48,8 @@ model = "claude-sonnet-4-6"
 anthropic_api_key = "sk-ant-..."
 openai_api_key    = "sk-..."
 
-# System prompt file. Lines starting with "//" are stripped (use for comments).
-system_prompt_file = "~/.config/mdc/system.md"
-
 # Directory of markdown files to use as a knowledge library (see "mdc index").
+# Its SYSTEM_PROMPT.md, if any, is added to every reply's system prompt.
 library_path = "~/notes"
 
 # Model used by "mdc index". Default: claude-haiku-4-5.
@@ -61,8 +59,9 @@ index_model = "claude-haiku-4-5"
 # Column width for paragraph wrapping in "mdc reply" edits. Default: 100.
 wrap_width = 100
 
-# Section headings treated as the user's own voice. Used during indexing.
-user_names = ["Prompt", "YourName"]
+# Your name as a section heading, treated as your own voice beside "Prompt",
+# which always is. MDC_USER_NAMES (comma-separated) overrides it for one run.
+user_names = ["YourName"]
 
 # Section headings treated as LLM voice.
 llm_names = ["Claude", "GPT"]
@@ -71,13 +70,13 @@ llm_names = ["Claude", "GPT"]
 ollama_base_url = "http://localhost:11434/v1"
 ```
 
-Run `mdc config` to print the resolved paths for config, system prompt, state, and cache directories.
+Run `mdc config` to print the resolved config file, cache directory, library, and the library's state directory.
 
 ## Global flags
 
 | Flag | Description |
 |------|-------------|
-| `--lib PATH` | Override `library_path` from config for a single invocation. Accepted before any subcommand: `mdc --lib ~/alt-notes index`. |
+| `--lib PATH` | The library for a single invocation, overriding `MDC_LIBRARY` and `library_path` from config. Accepted before any subcommand: `mdc --lib ~/alt-notes index`. |
 
 ---
 
@@ -330,7 +329,7 @@ After all segments finish, mdc writes `REVIEW_INCLUDE.md` to the library directo
 
 #### Custom prompts
 
-Place Markdown files in `~/.config/mdc/review-prompts/` to override the built-in prompts:
+Place Markdown files in `~/.config/mdc/review/` to override the built-in prompts:
 
 | File | Overrides |
 |------|-----------|
@@ -363,9 +362,9 @@ Print the resolved paths for configuration and data files, then exit.
 ```bash
 mdc config
 # Config file:   /Users/you/.config/mdc/config.toml
-# System prompt: /Users/you/.config/mdc/system.md
-# State dir:     /Users/you/.local/state/mdc
 # Cache dir:     /Users/you/.cache/mdc
+# Library:       /Users/you/notes
+# Library state: /Users/you/notes/.mdc
 ```
 
 ---

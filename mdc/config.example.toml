@@ -4,8 +4,10 @@ anthropic_api_key = "sk-ant-..."
 # Model used by "mdc reply". Default: claude-sonnet-4-6
 model = "claude-sonnet-4-6"
 
-# Directory of markdown files to use as a knowledge library.
-# Run "mdc index" to build INDEX.md from these files.
+# Directory of markdown files to use as a knowledge library. Run "mdc index"
+# to build INDEX.md from these files; its state is kept in the library's .mdc/
+# directory. Its SYSTEM_PROMPT.md, if any, is added to every reply's system
+# prompt. --lib, or MDC_LIBRARY, chooses another library for one run.
 library_path = "~/notes"
 
 # Model used by "mdc index" to summarize library documents. Default: claude-haiku-4-5
@@ -17,10 +19,11 @@ wrap_width = 100
 # Revision files older than this many days are deleted after each "mdc reply". Default: 7.
 # revision_retention_days = 7
 
-# Section headings recognized as the user's own voice in transcripts.
-# Used to classify documents during indexing and to validate reply targets.
-# user_names = ["Prompt", "YourName"]
-user_names = ["Prompt"]
+# Your name as it appears in section headings of your transcripts, beside
+# "Prompt", which is always recognized. Used to classify documents during
+# indexing and to validate reply targets. MDC_USER_NAMES (comma-separated)
+# overrides it for one run.
+# user_names = ["YourName"]
 
 # Section headings recognized as LLM voice in transcripts.
 llm_names = ["Claude", "GPT"]

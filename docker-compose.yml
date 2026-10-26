@@ -4,10 +4,15 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # System-wide config from the image; one asset cache for the server's API
+    # key. Libraries are /data/libraries/<user>/<library>, each with its own
+    # .mdc/ state (SERVER.md).
+    environment:
+      MDC_CONFIG_DIR: /etc/mdc
+      MDC_CACHE_DIR: /data/cache
     # The box's deploy user (ubuntu), which owns /srv/mdc, so files written
-    # into the workspaces stay editable from the host.
+    # into the libraries stay editable from the host.
     user: "1000:1000"
-    # Workspaces: /data/workspaces/<user>/{home,files} (SERVER.md).
     volumes:
       - /srv/mdc:/data
     # Loopback only: Caddy on the box is the one public front door
