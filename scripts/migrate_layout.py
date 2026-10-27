@@ -17,9 +17,15 @@ dated like documents. Decided 2026-10-26 for rodvandur/philosophy. This:
 5. names the role of every bare dated file: a markdown file is a chat or a
    document by mdc's old guess from its headings (`is_library_transcript`,
    made once here), any other format takes the role of its stem's document;
-6. rewrites the links to renamed files;
+6. rewrites, in place, every reference to a moved or renamed file in the
+   library's markdown (documents, reviews, the generated INDEX/MANIFEST/
+   RELATED/REFERENCES, REVISIONS; not sources, which are someone else's):
+   relative paths, plain or escaped as MANIFEST writes them, and bare names,
+   whether in a link, a `[asset: …]` line or prose;
 7. moves every file to its name and year directory in one step, carrying the
-   index state (library.move_documents), and removes the emptied folders;
+   index state (library.move_documents), renames each renamed document's
+   REVISIONS backups to match (`x--3.md` → `x.chat--3.md`, so `mdc diff`
+   still finds them), and removes the emptied folders;
 8. re-keys the asset cache by content (mdc/asset_cache.py) and drops the
    retired OpenAI and Ollama settings from config.toml.
 
@@ -159,16 +165,55 @@ def plan_roles(library: Path) -> dict[Path, str]:
     return names
 
 
-def rewrite_links(library: Path, renames: dict[str, str], apply: bool) -> None:
-    for doc in _files(library):
-        if doc.suffix != ".md":
+def rewrite_references(library: Path, moves: dict[Path, Path], apply: bool) -> None:
+    paths = {o.relative_to(library).as_posix(): n.relative_to(library).as_posix() for o, n in moves.items()}
+    names = {o.name: n.name for o, n in moves.items() if o.name != n.name}
+    undated = [re.escape(n) for n in names if not _DATED_RE.match(n)]
+    # A dated name, perhaps under a year (and a folder, perhaps escaped), or an
+    # undated asset's name; whole names only.
+    token = re.compile(
+        r"(?<![A-Za-z0-9_./\\-])"
+        r"(?:\d{4}/(?:\\?_?[A-Za-z0-9]+/)?)?"
+        r"(?:\d{4}-\d{2}-\d{2}-[A-Za-z0-9._-]+?\.(?:md|pdf|txt)" + "".join("|" + u for u in undated) + ")"
+        r"(?![A-Za-z0-9_-])"
+    )
+
+    def replace(m: re.Match) -> str:
+        found = m.group(0)
+        escaped = "\\_" in found
+        plain = found.replace("\\_", "_")
+        if plain in paths:
+            new = paths[plain]
+        elif "/" not in plain and plain in names:
+            new = names[plain]
+        else:
+            return found
+        return new.replace("_", "\\_") if escaped else new
+
+    for doc in sorted(library.rglob("*.md")):
+        if ".mdc" in doc.relative_to(library).parts or role_of(doc.name) == "source":
             continue
-        text = doc.read_text(encoding="utf-8")
-        new_text = _LINK_RE.sub(lambda m: f"]({renames.get(m.group(1), m.group(1))})", text)
+        text = doc.read_text(encoding="utf-8", errors="replace")
+        new_text, count = token.subn(replace, text)
         if new_text != text:
-            print(f"  links in {doc.relative_to(library)}")
+            changed = sum(1 for a, b in zip(token.findall(text), token.findall(new_text)) if a != b)
+            print(f"  {doc.relative_to(library)}: {changed}")
             if apply:
                 doc.write_text(new_text, encoding="utf-8")
+
+
+_BACKUP_RE = re.compile(r"^(.+)--(\d+)(\.[^.]+)$")
+
+
+def plan_backup_names(library: Path, moves: dict[Path, Path]) -> dict[Path, Path]:
+    renamed = {o.name: n.name for o, n in moves.items() if o.name != n.name}
+    backups = {}
+    revisions = library / "REVISIONS"
+    for path in sorted(revisions.glob("*")) if revisions.is_dir() else ():
+        m = _BACKUP_RE.match(path.name)
+        if m and (new := renamed.get(m.group(1) + m.group(3))):
+            backups[path] = path.with_name(f"{Path(new).stem}--{m.group(2)}{Path(new).suffix}")
+    return backups
 
 
 def plan_moves(library: Path, names: dict[Path, str]) -> dict[Path, Path]:
@@ -263,11 +308,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {n} → .{key}")
     names.update(roles)
 
-    print("6. links")
-    rewrite_links(library, {old.name: new for old, new in names.items()}, apply)
+    moves = plan_moves(library, names)
+
+    print("6. references")
+    rewrite_references(library, moves, apply)
 
     print("7. names and year directories")
-    moves = plan_moves(library, names)
+    moves.update(plan_backup_names(library, moves))
     print(f"  {len(moves)} files: {sum(1 for o, n in moves.items() if o.parent != n.parent)} change directory,"
           f" {sum(1 for o, n in moves.items() if o.name != n.name)} change name")
     if apply and moves:

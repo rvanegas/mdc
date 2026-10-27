@@ -177,9 +177,14 @@ Names are unique across a library (checked: no basename repeats outside
 `scripts/migrate_layout.py` does this to `rodvandur/philosophy` (plan by
 default, `--apply` to make it). Rehearsed on a copy: 5 editor backups to the
 Trash, 6 sources named, 602 bare transcripts → `.chat.md`, 23 → `.document.md`,
-35 PDFs → `.chat.pdf`; 924 files renamed or moved; all 631 index entries
-carried, and the following `mdc index` summarizes 11 documents, the ones the
-migration writes. A second run finds nothing to do. Before it, 2026-10-26: the
+35 PDFs → `.chat.pdf`; 924 files renamed or moved, and 37 `REVISIONS/`
+backups renamed with their documents so `mdc diff` still finds them. Every
+reference to a moved or renamed file is rewritten in place: 18,850 paths in
+the generated INDEX/RELATED/REFERENCES/MANIFEST (some escaped, `2023/\_private/…`),
+and the links and `[asset: …]` lines of documents and backups; a scan of the
+result finds no old name or path left. All 631 index entries carried, and the
+following `mdc index` summarizes 11 documents, the ones the migration writes.
+A second run finds nothing to do. Before it, 2026-10-26: the
 tension drafts, `_phil184/conversations.zip` and the unlinked
 `2026-07-28-civilizational-conflict.pdf` went to the Trash, and
 `condensed-systematicity.{wav,pdf}` out to `~/Documents/Writing`.
