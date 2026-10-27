@@ -226,7 +226,7 @@ goes right after landing: the Mac's `mdc` is an editable install of the
 `mdc index` before the migration finds no state and reindexes everything.
 That happened on 2026-10-26 while the checkout sat on this branch (7
 documents indexed, `MANIFEST.md` overwritten, then rebuilt from the intact
-state). Branch work stays in a worktree (`~/src/mdc-library-layout`).
+state). Branch work stays in a worktree, under `~/src/mdc/.claude/worktrees/<branch>`.
 
 ```bash
 python3 scripts/migrate_library.py ~/Documents/Writing/Chats
