@@ -32,7 +32,8 @@ The tool has two main pipelines: **CLI → Transcript parsing → Format validat
 
 ### Key modules
 
-- **`cli.py`** — the subcommands, among them `index`, `new`, `check`, `validate`, `fix`, `reply`, `pdf`, `argue`, `analyze`, `audit`, `export`, `serve`
+- **`cli.py`** — the subcommands, among them `index`, `new`, `import`, `check`, `validate`, `fix`, `reply`, `pdf`, `argue`, `analyze`, `audit`, `export`, `sync`, `serve`
+- **`cmd_import.py`** — `mdc import`: claude.ai data exports (zip or `conversations.json`, active branch) and saveai.net Markdown (`form._parse_exported_chat`) become `.chat.md`; anything else a `.document.md`; checked in a scratch directory under its own name before it is written
 - **`transcript.py`** — Core parsing: splits markdown into preamble + conversational turns, detects pending human turns awaiting reply, manages reference sections
 - **`form.py`** — Enforces the 12-rule transcript format (blank lines, headers, speaker labels, reference formatting, filename derivation)
 - **`assets.py`** — Collects local file references from markdown links (a bare name resolves anywhere in the run's library, beside the transcript first; nothing outside the library), builds API-specific inputs with caching directives

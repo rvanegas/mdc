@@ -400,6 +400,25 @@ curl -N -H "Authorization: Bearer $T" -H "Content-Type: application/json" \
 
 `PUT …/files/{path}` creates a file with `If-None-Match: *` and replaces one with `If-Match: "<sha256>"`; `DELETE` takes `If-Match`. `run` streams `output` events and ends with `done`: the exit code and the files the run changed or deleted.
 
+### `mdc import`
+
+Turn conversations held elsewhere into library files, written into this year's directory like `mdc new`:
+
+```bash
+mdc import ~/Downloads/data-2026-10-27.zip                 # every claude.ai conversation
+mdc import conversations.json --only "Being and Seeming"   # one, by name or uuid
+mdc import 2026-08-03-verbal-disputes.md                   # a saveai.net export
+mdc import notes-on-quine.md                               # anything else: a .document.md
+```
+
+| Input | Becomes |
+|---|---|
+| claude.ai's data export (Settings → Privacy → Export data), the zip or its `conversations.json` | one `<date>-<slug>.chat.md` per conversation, its turns exactly as exported, along the branch shown last when messages were edited; attachments and tool calls noted as `\| [attachment: …]` / `\| [tool: …]` |
+| a saveai.net (AI Chat Exporter) Markdown export | a `.chat.md` |
+| anything else | a `.document.md`, its text as it is |
+
+Headings inside a turn are promoted to `###`, as `reply` does. Each file is checked (`check` for a chat, the global checks for a document) before it is written. A file that already exists is skipped; `--replace` overwrites it.
+
 ### `mdc sync` and the server
 
 With mdc's server configured, the model-backed commands (`reply`, `index`, `argue`, `analyze`, `audit`, `export`, `pdf`, `review`, `files`) run there, on its keys, and this machine holds none:

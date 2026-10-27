@@ -223,6 +223,9 @@ def main(argv: list[str] | None = None) -> int:
                 reprocess_all=args.all,
                 verbose=args.verbose,
             )
+        if args.command == "import":
+            from mdc.cmd_import import run_import
+            return run_import([Path(p).expanduser() for p in args.files], only=args.only, replace=args.replace)
         if args.command == "new":
             config = load_config()
             return run_new(" ".join(args.title_words) or None, edit=args.edit, library_path=config.library_path)
@@ -649,6 +652,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve_parser.add_argument("--host", default="127.0.0.1", help="Interface to bind. Default: 127.0.0.1.")
     serve_parser.add_argument("--port", type=int, default=8001, help="Port to bind. Default: 8001.")
+
+    # import
+    import_parser = subparsers.add_parser(
+        "import",
+        help="Turn conversations from elsewhere into library files (claude.ai export, saveai.net, or a document).",
+    )
+    import_parser.add_argument("files", nargs="+", help="A claude.ai export (zip or conversations.json), saveai.net Markdown, or any text file.")
+    import_parser.add_argument("--only", metavar="NAME", help="From a claude.ai export, only the conversation with this name or uuid.")
+    import_parser.add_argument("--replace", action="store_true", help="Overwrite a file the import would otherwise skip as existing.")
 
     # sync
     subparsers.add_parser(

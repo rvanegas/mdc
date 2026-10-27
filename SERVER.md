@@ -465,7 +465,7 @@ The plan as written before building:
   lookup. The server runs the same package, so the model clients themselves
   stay.
 
-## Phase 4 — `mdc import` — planned 2026-10-27
+## Phase 4 — `mdc import` — built 2026-10-27, not yet landed
 
 Conversations held elsewhere become library files. Local, with no server
 change; independent of Phase 5, and first because it is small and settles

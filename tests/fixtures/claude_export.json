@@ -1,0 +1,36 @@
+[
+  {
+    "uuid": "c-1",
+    "name": "Being and Seeming",
+    "created_at": "2026-09-14T10:02:00.000000Z",
+    "updated_at": "2026-09-14T10:30:00.000000Z",
+    "current_leaf_message_uuid": "m-4b",
+    "chat_messages": [
+      {"uuid": "m-1", "parent_message_uuid": "00000000-0000-4000-8000-000000000000", "sender": "human",
+       "created_at": "2026-09-14T10:02:00Z", "text": "", "content": [{"type": "text", "text": "Is seeming a kind of being?"}],
+       "attachments": [{"file_name": "notes.txt", "extracted_content": "..."}], "files": []},
+      {"uuid": "m-2", "parent_message_uuid": "m-1", "sender": "assistant",
+       "created_at": "2026-09-14T10:02:30Z", "text": "",
+       "content": [{"type": "thinking", "thinking": "hidden"}, {"type": "text", "text": "## Two readings\n\nIt depends on what seeming is."}],
+       "attachments": [], "files": []},
+      {"uuid": "m-3a", "parent_message_uuid": "m-2", "sender": "human",
+       "created_at": "2026-09-14T10:05:00Z", "text": "A first try, edited away.", "content": [], "attachments": [], "files": []},
+      {"uuid": "m-3b", "parent_message_uuid": "m-2", "sender": "human",
+       "created_at": "2026-09-14T10:06:00Z", "text": "Take the phenomenal reading.", "content": [], "attachments": [], "files": []},
+      {"uuid": "m-4b", "parent_message_uuid": "m-3b", "sender": "assistant",
+       "created_at": "2026-09-14T10:06:30Z", "text": "",
+       "content": [{"type": "tool_use", "name": "web_search", "input": {}}, {"type": "text", "text": "Then yes, in Meinong's sense."}],
+       "attachments": [], "files": []}
+    ]
+  },
+  {
+    "uuid": "c-2",
+    "name": "",
+    "created_at": "2026-10-01T08:00:00Z",
+    "chat_messages": [
+      {"uuid": "n-1", "sender": "human", "text": "A quick one.", "attachments": [], "files": []},
+      {"uuid": "n-2", "sender": "assistant", "text": "A quick answer.", "attachments": [], "files": []}
+    ]
+  },
+  {"uuid": "c-3", "name": "Empty", "created_at": "2026-10-02T08:00:00Z", "chat_messages": []}
+]
