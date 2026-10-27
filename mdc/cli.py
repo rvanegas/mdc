@@ -63,63 +63,76 @@ def _primary(companion: Path) -> Path:
 
 
 def _resolve_path_abbrev(s: str, cwd: Path, *, secondary_priority: tuple[str, ...] = ()) -> Path | None:
-    """Resolve a file path argument, expanding abbreviations.
+    """Resolve a file argument: a path, a name anywhere in the library, or an abbreviation.
 
-    If `s` names an existing file (absolute or relative to cwd), return it.
-    Otherwise treat `s` as a case-insensitive substring to match against the
-    stem of every date-slug .md file (YYYY-MM-DD-*.md) in cwd.  Returns the
-    resolved Path on an unambiguous match, or None after printing an error.
+    1. `s` names an existing file, absolute or relative to cwd.
+    2. In a library, `s` is the name of a file anywhere in it: names are unique.
+    3. `s` is a case-insensitive substring of the date-slug stem of role-named
+       .md files, matched in cwd first and then across the library. Among
+       files sharing a stem, the role earliest in `secondary_priority` wins
+       (default: chat, document, source).
 
-    `secondary_priority` lists companion suffixes to include (e.g. ``("chat",)``).
-    When multiple companions share a primary stem, the one whose suffix appears
-    earliest in the tuple wins; bare ``.md`` files are always lowest priority.
+    Returns the Path on an unambiguous match, or None after printing an error.
     """
+    from mdc.library import role_of
     candidate = Path(s)
     if not candidate.is_absolute():
         candidate = cwd / s
     if candidate.exists():
         return candidate
 
+    library = load_config().library_path
+    in_library = library is not None and _is_within(cwd.resolve(), library.resolve())
+    if in_library and "/" not in s:
+        named = [p for p in _library_files(library) if p.name == s]
+        if len(named) == 1:
+            return named[0]
+
+    roles = secondary_priority or ("chat", "document", "source")
     abbrev = s.lower()
-    raw_matches = sorted(
-        p.name
-        for p in cwd.iterdir()
-        if _DATED_SLUG_RE.match(p.name)
-        and (len(p.suffixes) == 1 or any(p.name.endswith(f".{sec}.md") for sec in secondary_priority))
-        and abbrev in p.stem.lower()
-    )
-
-    if secondary_priority:
-        def _sec_rank(name: str) -> int:
-            for i, sec in enumerate(secondary_priority):
-                if name.endswith(f".{sec}.md"):
-                    return i
-            return len(secondary_priority)
-
-        def _primary_stem(name: str) -> str:
-            for sec in secondary_priority:
-                if name.endswith(f".{sec}.md"):
-                    return name[: -len(f".{sec}.md")]
-            return name[:-3]
-
-        by_stem: dict[str, str] = {}
-        for name in raw_matches:
-            stem = _primary_stem(name)
-            if stem not in by_stem or _sec_rank(name) < _sec_rank(by_stem[stem]):
-                by_stem[stem] = name
-        matches = sorted(by_stem.values())
-    else:
-        matches = raw_matches
+    scopes = [sorted(cwd.iterdir())] + ([_library_files(library)] if in_library else [])
+    matches: list[Path] = []
+    for files in scopes:
+        best: dict[str, Path] = {}
+        for p in files:
+            if not (p.is_file() and _DATED_SLUG_RE.match(p.name) and role_of(p.name) in roles):
+                continue
+            stem = p.name.split(".")[0]
+            if abbrev not in stem.lower():
+                continue
+            if stem not in best or roles.index(role_of(p.name)) < roles.index(role_of(best[stem].name)):
+                best[stem] = p
+        matches = sorted(best.values(), key=lambda p: p.name)
+        if matches:
+            break
 
     if not matches:
         print(f"Error: '{s}' not found.")
         return None
     if len(matches) == 1:
-        return cwd / matches[0]
+        return matches[0]
     print(f"Ambiguous abbreviation '{s}' matches multiple files:")
-    for name in matches:
-        print(f"  {name}")
+    for p in matches:
+        print(f"  {p.name}")
     return None
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _library_files(library: Path) -> list[Path]:
+    """Every file of a library but its backups and state."""
+    from mdc.config import LIBRARY_STATE_DIRNAME
+    skip = {LIBRARY_STATE_DIRNAME, "REVISIONS"}
+    return sorted(
+        p for p in library.rglob("*")
+        if p.is_file() and not skip.intersection(p.relative_to(library).parts)
+    )
 
 
 _COMPANION_SUFFIXES = ("document", "chat", "argument")
@@ -143,22 +156,13 @@ def _resolve_edit_paths(s: str, cwd: Path) -> list[Path]:
     if primary is None:
         return []
 
-    stem = primary.name
-    for sec in _COMPANION_SUFFIXES:
-        if stem.endswith(f".{sec}.md"):
-            stem = stem[: -len(f".{sec}.md")]
-            break
-    else:
-        stem = stem[:-3]  # strip .md
+    stem = primary.name.split(".")[0]
 
     results = []
     for sec in _COMPANION_SUFFIXES:
-        p = cwd / f"{stem}.{sec}.md"
+        p = primary.parent / f"{stem}.{sec}.md"
         if p.exists():
             results.append(p)
-    bare = cwd / f"{stem}.md"
-    if bare.exists():
-        results.append(bare)
     return results or [primary]
 
 
@@ -737,9 +741,9 @@ def _slug_map(*roots: Path) -> dict[str, list[Path]]:
 
 
 def _collect_existing_slugs(extra_root: Path | None) -> set[str]:
-    slugs = {p.stem for p in Path.cwd().glob("*.md")}
+    slugs = {p.name.split(".")[0] for p in Path.cwd().glob("*.md")}
     if extra_root and extra_root.is_dir():
-        slugs |= set(_slug_map(extra_root).keys())
+        slugs |= {p.name.split(".")[0] for paths in _slug_map(extra_root).values() for p in paths}
     return slugs
 
 
@@ -755,11 +759,16 @@ def run_new(title: str | None, edit: bool = False, library_path: Path | None = N
             n += 1
         title = candidate
     slug = slugify(title)
+    # In a library a new file goes where its name puts it: this year's directory.
+    here = Path.cwd()
+    if library_path and _is_within(here.resolve(), library_path.resolve()):
+        here = library_path / today[:4]
+        here.mkdir(exist_ok=True)
     if edit:
         document_filename = f"{today}-{slug}.document.md"
         chat_filename = f"{today}-{slug}.chat.md"
-        document_path = Path(document_filename)
-        chat_path = Path(chat_filename)
+        document_path = here / document_filename
+        chat_path = here / chat_filename
         if document_path.exists():
             print(f"Error: '{document_filename}' already exists.")
             return 1
@@ -773,16 +782,16 @@ def run_new(title: str | None, edit: bool = False, library_path: Path | None = N
         )
         print(document_filename)
         print(chat_filename)
-        paths = [chat_filename, document_filename]
+        paths = [str(chat_path), str(document_path)]
     else:
         filename = f"{today}-{slug}.chat.md"
-        path = Path(filename)
+        path = here / filename
         if path.exists():
             print(f"Error: '{filename}' already exists.")
             return 1
         path.write_text(f"\n# {title}\n{today}\n\n## Prompt\n\n", encoding="utf-8")
         print(filename)
-        paths = [filename]
+        paths = [str(path)]
     editor_cmd = get_editor()
     if editor_cmd:
         subprocess.run([editor_cmd, *paths])

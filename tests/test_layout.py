@@ -122,3 +122,27 @@ def test_index_takes_a_sessions_document_not_its_chat(tmp_path):
     (tmp_path / "2026" / "2026-07-01-y.chat.md").write_text(DOC)
     entries, _ = build_index(tmp_path, summarize=lambda content, wc, role: ("s", ["t"]))
     assert sorted(e.rel_path for e in entries) == ["2026/2026-06-30-x.document.md", "2026/2026-07-01-y.chat.md"]
+
+
+def test_abbreviation_and_name_resolve_across_the_library(library, monkeypatch, capsys):
+    (library / "2025").mkdir()
+    (library / "2026").mkdir()
+    (library / "2025" / "2025-04-25-old-roman.chat.md").write_text(DOC)
+    (library / "2026" / "2026-01-02-new-roman.document.md").write_text("\n# New Roman\n2026-01-02\n\nText.\n")
+    monkeypatch.chdir(library)
+    assert main(["check", "old-roman"]) == 0
+    assert main(["check", "2025-04-25-old-roman.chat.md"]) == 0
+    assert main(["check", "roman"]) == 1
+    assert "Ambiguous" in capsys.readouterr().out
+
+
+def test_new_goes_into_the_year_directory(library, monkeypatch):
+    import datetime
+    monkeypatch.chdir(library)
+    monkeypatch.delenv("EDITOR", raising=False)
+    monkeypatch.delenv("MDC_EDITOR", raising=False)
+    assert main(["new", "Fresh", "Start"]) == 0
+    year = datetime.date.today().isoformat()[:4]
+    made = list((library / year).glob("*-fresh-start.chat.md"))
+    assert len(made) == 1
+    assert main(["new", "Fresh", "Start"]) == 1  # taken
