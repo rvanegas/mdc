@@ -294,7 +294,7 @@ The plan as written before building (its workspace layout is superseded by
   `server/deployed.json` pattern). `bin/deploy` ends in a health check against
   `https://mdc.rvanegas.co/healthz`.
 
-## Phase 2 — the API (`mdc serve`) — built 2026-10-26, not yet deployed
+## Phase 2 — the API (`mdc serve`) — deployed 2026-10-27; the nightly cron entry is left
 
 FastAPI + uvicorn in `mdc/server.py`, the same stack as dianoia, grown from
 Phase 1's `/healthz`.
@@ -323,9 +323,28 @@ Phase 1's `/healthz`.
   which deploys mirror with `--delete`) and runs `index` in each through
   `/run`. There is no `relate`: relations are part of `index`.
 
-**Left, each on its own go-ahead:** land `api`; `bin/deploy`; mint Rodrigo's
-token and the service token on the box; install the cron entry; `curl -N` a
-`reply` through Caddy.
+**Deployed** master `f046b0b` (2026-10-27). Tokens, minted by Rodrigo with
+`scripts/add_token.py` (minting credentials is theirs to run): `rodvandur`,
+written into the Mac's `config.toml` as `server_url`/`server_token` for
+Phase 3, and `*` in the box's `~/.config/mdc/nightly-token`; `users.toml`,
+`config.toml` and the token file are mode 600.
+
+**Verified** through Caddy: no token or a wrong one gets 401; Rodrigo's token
+lists `rodvandur/philosophy`. A throwaway chat created with `PUT`
+(`If-None-Match: *`), replied to with `run` (`reply api-smoke-test`, found by
+abbreviation): Claude's reply arrived as 25 `output` events between 3.8 s and
+5.0 s, and `done` named the chat and its new backup as changed (and the 18
+backups `reply` pruned for age as deleted); both were then removed with
+`DELETE` and their `If-Match` hashes, and a stale `If-Match` got 412.
+`bin/nightly-index` run by hand on the box indexed the library through the
+API with the service token (exit 0, nothing to summarize).
+
+**Left:** the cron entry on the box, which installs a recurring job and so is
+Rodrigo's to add:
+
+```bash
+ssh -i ~/.ssh/lightsail-ubuntu ubuntu@32.190.173.222 'mkdir -p ~/.local/state; (crontab -l 2>/dev/null | grep -v mdc/bin/nightly-index; echo "30 9 * * * \$HOME/mdc/bin/nightly-index >> \$HOME/.local/state/mdc-nightly.log 2>&1") | crontab -'
+```
 
 The plan as written before building:
 
