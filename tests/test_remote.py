@@ -154,3 +154,17 @@ def test_remote_argv_names_files_and_drops_lib(tmp_path):
     (tmp_path / "2026" / "x.chat.md").write_text("")
     assert remote_argv(["--lib", "/l", "reply", "-l", "2026/x.chat.md"], tmp_path) == ["reply", "-l", "x.chat.md"]
     assert remote_argv(["reply", "eleatic", "--lib=/l"], tmp_path) == ["reply", "eleatic"]
+
+
+def test_editor_scratch_files_stay_local(setup):
+    client, local, remote, _ = setup
+    (local / "x.chat.md").write_text("text")
+    (local / "x.chat.md~").write_text("backup")
+    (local / "#x.chat.md#").write_text("autosave")
+    (remote / "y.chat.md~").write_text("a backup an older client sent")
+    _quiet(sync, client, local, LIB)
+    # Never sent; and one already on the server counts as deleted here.
+    assert sorted(p.name for p in remote.iterdir()) == ["x.chat.md"]
+    assert (local / "x.chat.md~").exists() and (local / "#x.chat.md#").exists()
+    (local / "x.chat.md~").write_text("a newer backup")
+    assert _quiet(sync, client, local, LIB)[1] == ""

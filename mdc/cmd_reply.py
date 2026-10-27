@@ -446,6 +446,12 @@ def run_reply(
         print(f"Renaming '{path.name}' to '{chat.name}'.")
         path = path.rename(chat)
 
+    # A chat with a companion beside it works on it: -e only creates a missing
+    # .document.md.
+    from mdc.edit_tools import resolve_edit_targets
+    if resolve_edit_targets(path):
+        edit = True
+
     if watch:
         return _run_reply_watch(path, model=model, reasoning_effort=reasoning_effort, verbose=verbose, web=web)
 

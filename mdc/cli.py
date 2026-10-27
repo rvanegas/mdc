@@ -586,7 +586,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-e", "--edit",
         action="store_true",
         default=False,
-        help="Allow the model to edit companion document files.",
+        help="Create the companion .document.md if missing. A .chat.md's existing companions are always loaded and editable.",
     )
     reply_parser.add_argument("path", help="Path to the markdown transcript.")
 

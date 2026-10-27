@@ -127,15 +127,22 @@ def _sha256(data: bytes) -> str:
 
 
 def local_hashes(root: Path) -> dict[str, str]:
-    """{rel_path: sha256} of what syncs: as the server lists it, less conflict copies."""
+    """{rel_path: sha256} of what syncs: as the server lists it, less conflict
+    copies and editor scratch files."""
     hashes = {}
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root)
         if (any(part.startswith(".") for part in rel.parts) or path.is_symlink()
-                or not path.is_file() or path.name.endswith(CONFLICT_SUFFIX)):
+                or not path.is_file() or path.name.endswith(CONFLICT_SUFFIX)
+                or _editor_scratch(path.name)):
             continue
         hashes[rel.as_posix()] = _sha256(path.read_bytes())
     return hashes
+
+
+def _editor_scratch(name: str) -> bool:
+    """An editor's backup (`x.md~`) or autosave (`#x.md#`): not the library's."""
+    return name.endswith("~") or (name.startswith("#") and name.endswith("#"))
 
 
 def _state_path(root: Path) -> Path:
