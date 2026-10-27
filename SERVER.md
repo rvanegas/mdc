@@ -465,6 +465,118 @@ The plan as written before building:
   lookup. The server runs the same package, so the model clients themselves
   stay.
 
+## Phase 4 — claude.ai reaches the library — planned 2026-10-27
+
+Claude on claude.ai (web, phone, Desktop) gets the tools `mdc reply` gives
+the model, on Rodrigo's libraries, through a custom connector: a remote MCP
+server. And `mdc import` turns conversations held elsewhere into library
+files. This is the first "client other than the CLI" of TODO.md, with
+claude.ai as that client. It supersedes the plan of the session "MCP access
+to mdc reply" (2026-10-23), which put a stdio server on the Mac and needed a
+tunnel for claude.ai: `mdc.rvanegas.co` is already the public HTTPS endpoint,
+and the library and keys are already on `commons`.
+
+### 4a — `mdc import` (local, no server change)
+
+`mdc import <file>…` writes role-named files into the current library's
+year directories, like `mdc new`, and the next sync carries them up:
+
+- **claude.ai's data export** (Settings → Privacy → Export data: a zip, or
+  its `conversations.json`): each conversation becomes `<date>-<slug>.chat.md`
+  from its own messages, exactly: title from the conversation's name, date
+  from its creation, `## Prompt` and `## Claude` turns, `##` headings inside
+  replies promoted to `###` (as `reply` does). `--only <name or uuid>`
+  imports one conversation; the default is all, skipping one whose file
+  already exists (`--replace` to overwrite it).
+- **saveai.net exports** (Markdown, the "AI Chat Exporter" format `mdc fix`
+  already converts: `# You asked` / `# Claude response` blocks): converted by
+  `form.fix_exported_chat` into a `.chat.md`. To check against a real
+  saveai.net Claude export before relying on it.
+- **Anything else**, or a chat export that does not parse: imported as a
+  `.document.md`, its text as it is, under a title and date taken from its
+  first heading and the file's date (or today).
+
+Every imported file passes `check` (a chat) or `validate` (a document)
+before it is written; names stay unique across the library.
+
+### 4b — the tools, in-process, behind `/mcp`
+
+- **Lift the tools out of `reply`.** Their executors are closures built in
+  `cmd_reply.py` (`_reply_anthropic`); they move to one module, called by
+  `reply` and by the MCP server alike. On the server they run in-process,
+  not as a `/run` subprocess: the start of the "API for clients other than
+  the CLI" in TODO.md.
+- **The MCP server:** the official `mcp` Python SDK, streamable HTTP,
+  mounted at `/mcp` in `mdc serve`'s FastAPI app (behind the Caddy block that
+  exists). Tools, each taking a library id (default: the caller's only one):
+  - `list_documents(query?)`: documents by title or term, with their roles
+    and companions.
+  - `lookup_term(term)`, `read_document(path)`: as in `reply -l`.
+  - `read_file(name)`: a chat, document, argument or source by name.
+  - `edit_file(name, old_str, new_str)`: exact replacement in a `.document.md`
+    or `.argument.md` (never a source), with `reply`'s numbered backup,
+    paragraph wrapping, and the returned diff.
+  - `append_turn(name, speaker, text)`: adds a turn to a `.chat.md`, created
+    when missing (`speaker`: the user's heading or `Claude`), so a claude.ai
+    conversation can be kept as it goes. Unreliable by nature: Claude may
+    forget to call it, and `mdc import` repairs or replaces the transcript
+    afterwards.
+  - Later: `analyze`, `audit` (through dianoia), `new_session` (a
+    `.chat.md` + `.document.md` pair).
+  The rules `reply` puts in its system prompt (the editing instructions, the
+  argument format, never renumbering propositions) go into the server's MCP
+  instructions and the tools' descriptions.
+- **Writes** take the library's lock like `/run` (409 while a run is in
+  progress) and land in the server's copy, which is canonical; the Mac gets
+  them on its next sync, and a file also edited locally becomes a
+  `.server` conflict, never a silent overwrite.
+- **Tested first from Claude Code**, which can send a bearer header to a
+  remote MCP server: a token from `users.toml` works there before any OAuth
+  exists.
+
+### 4c — sign-in through Roxana's Cognito pool
+
+claude.ai's custom connectors sign in with OAuth. The MCP server is a
+resource server; Roxana's user pool is the authorization server.
+
+- **Identity is Cognito's, not claude.ai's.** Adding the connector opens
+  Cognito's sign-in page; claude.ai never sends its own account's email to
+  the server. Cognito's username need not be an email (in Roxana's pool it
+  is not: `usernameAttributes` is empty, email a required attribute). mdc
+  maps the token's `sub`, which never changes, to an mdc user:
+  `[[cognito]] sub = "…" user = "rodvandur"` in `users.toml`.
+- **The pool needs, as AWS changes on their own go-ahead** (and recorded in
+  rvanegas-site's IAM/SITE notes): a Cognito domain for its hosted sign-in,
+  and an app client `mdc-claude` with a secret, the authorization-code grant
+  and refresh tokens, scopes `openid email`, and callback URLs
+  `https://claude.ai/api/mcp/auth_callback` and
+  `https://claude.com/api/mcp/auth_callback`. Roxana's Gen 2 migration
+  (before May 2027) must carry them.
+- **Cognito has no dynamic client registration**, so the connector is added
+  in claude.ai with that client's ID and secret under *Advanced settings*.
+- **mdc serves** `/.well-known/oauth-protected-resource` naming the pool as
+  its authorization server, and checks each request's access token against
+  the pool's JWKS (issuer, `client_id` = `mdc-claude`, `token_use` =
+  `access`, expiry), as dianoia checks Roxana's ID tokens since SITE Phase 4.
+- **To settle first, with a stub:** whether claude.ai finds Cognito's
+  endpoints from its OpenID discovery document (Cognito does not serve the
+  OAuth metadata path, RFC 8414). If not, mdc serves
+  `/.well-known/oauth-authorization-server` describing Cognito's endpoints.
+
+### Verification
+
+- **4a:** tests on a recorded claude.ai export and a saveai.net file: exact
+  turns, promoted headings, unique names, the document fallback; by hand,
+  importing one real claude.ai conversation and replying to it with
+  `mdc reply`.
+- **4b:** MCP tests with the SDK's in-process client: each tool, the lock,
+  no write to a source or outside the library; from Claude Code with a
+  bearer token, a `lookup_term`, an `edit_file` whose backup and diff appear,
+  and the edit reaching the Mac with `mdc sync`.
+- **4c:** an expired, foreign (another pool or client) or unmapped token
+  gets 401; then, in claude.ai, adding the connector, signing in through
+  Cognito, and asking Claude to look up a term and edit a document.
+
 ---
 
 ## Files touched
