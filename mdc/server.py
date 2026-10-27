@@ -44,11 +44,12 @@ from pydantic import BaseModel
 # is "dev".
 _DEPLOYED = Path(__file__).resolve().parent / "deployed.json"
 
-# Subcommands a client may run. edit, config, files and serve belong to the
-# client's own machine or to the operator.
+# Subcommands a client may run. edit, config, sync and serve belong to the
+# client's own machine or to the operator. files lists the files uploaded
+# with the server's key, which only the server holds.
 RUNNABLE = frozenset({
     "check", "validate", "fix", "new", "reply", "index",
-    "argue", "analyze", "audit", "export", "pdf", "diff", "review",
+    "argue", "analyze", "audit", "export", "pdf", "diff", "review", "files",
 })
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _USER_NAME_RE = re.compile(r"^[^\s,]+$")
@@ -272,7 +273,8 @@ async def _execute(root: Path, run: Run, events: asyncio.Queue, lock: asyncio.Lo
     try:
         before = await asyncio.to_thread(tree_hashes, root)
         env = {k: v for k, v in os.environ.items() if k != "MDC_LIBRARY"}
-        env.update(MDC_USER_NAMES=",".join(run.user_names), PYTHONUNBUFFERED="1")
+        # MDC_RUN_LOCAL: this mdc is the server's, never a client of it.
+        env.update(MDC_USER_NAMES=",".join(run.user_names), PYTHONUNBUFFERED="1", MDC_RUN_LOCAL="1")
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "mdc", "--lib", str(root), *run.argv,
             cwd=root, env=env,

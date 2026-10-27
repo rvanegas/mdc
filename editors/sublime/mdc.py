@@ -50,8 +50,11 @@ def _append(panel: sublime.View, text: str) -> None:
 
 
 def _run_async(window: sublime.Window, view: sublime.View, args: list[str],
-               on_success: "callable[[], None] | None" = None) -> None:
-    """Run mdc with ARGS in the file's directory, streaming into the output panel."""
+               on_success: "callable[[], None] | None" = None,
+               on_exit: "callable[[], None] | None" = None) -> None:
+    """Run mdc with ARGS in the file's directory, streaming into the output panel.
+
+    on_exit runs whenever mdc ends; on_success after it, if mdc succeeded."""
     filepath = view.file_name()
     if not filepath:
         sublime.error_message("Buffer is not saved to a file.")
@@ -74,6 +77,8 @@ def _run_async(window: sublime.Window, view: sublime.View, args: list[str],
             for line in proc.stdout:
                 sublime.set_timeout(lambda l=line: _append(panel, l), 0)
             proc.wait()
+            if on_exit:
+                sublime.set_timeout(on_exit, 0)
             if proc.returncode == 0 and on_success:
                 sublime.set_timeout(on_success, 100)
             elif proc.returncode != 0:
@@ -81,6 +86,8 @@ def _run_async(window: sublime.Window, view: sublime.View, args: list[str],
                     lambda: _append(panel, f"\n[exit {proc.returncode}]\n"), 0
                 )
         except FileNotFoundError:
+            if on_exit:
+                sublime.set_timeout(on_exit, 0)
             sublime.set_timeout(
                 lambda: _append(panel, f"Error: '{_executable()}' not found in PATH.\n"), 0
             )
@@ -95,8 +102,12 @@ class MdcReplyCommand(sublime_plugin.WindowCommand):
 
     def run(self) -> None:
         view = self.window.active_view()
+        # Read-only while the reply runs (on mdc's server, for a mirrored
+        # library), so nothing typed meanwhile is lost to the revert.
+        view.set_read_only(True)
         _run_async(self.window, view, ["reply"],
-                   on_success=lambda: view.run_command("revert"))
+                   on_success=lambda: view.run_command("revert"),
+                   on_exit=lambda: view.set_read_only(False))
 
     def is_enabled(self) -> bool:
         view = self.window.active_view()

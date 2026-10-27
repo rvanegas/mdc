@@ -126,14 +126,26 @@ Save the current buffer first.  SENTINEL, if given, is called with
 
 ;; ── Commands ─────────────────────────────────────────────────────────────────
 
+(defun mdc--reply-sentinel (source-buf)
+  "Return a sentinel that makes SOURCE-BUF writable again when mdc exits,
+reverting it first on success (if `mdc-revert-after-modify')."
+  (lambda (proc _event)
+    (when (and (memq (process-status proc) '(exit signal))
+               (buffer-live-p source-buf))
+      (with-current-buffer source-buf
+        (setq buffer-read-only nil)
+        (when (and mdc-revert-after-modify (zerop (process-exit-status proc)))
+          (revert-buffer t t t))))))
+
 ;;;###autoload
 (defun mdc-reply ()
-  "Run `mdc reply' on the current file and revert when done."
+  "Run `mdc reply' on the current file and revert when done.
+The buffer is read-only while the reply runs (on mdc's server, when the
+library is mirrored there), so nothing typed meanwhile is lost to the revert."
   (interactive)
-  (mdc--run-async
-   '("reply")
-   (when mdc-revert-after-modify
-     (mdc--revert-sentinel (current-buffer)))))
+  (let ((source (current-buffer)))
+    (mdc--run-async '("reply") (mdc--reply-sentinel source))
+    (setq buffer-read-only t)))
 
 ;;;###autoload
 (defun mdc-fix ()

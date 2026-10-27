@@ -384,7 +384,39 @@ The plan as written before building:
   and stream through the clients' existing `on_delta` callbacks. That
   retires the subprocess.
 
-## Phase 3 — the local CLI becomes a client
+## Phase 3 — the local CLI becomes a client — built 2026-10-27, not yet deployed
+
+**Built** on mdc branch `client` (`mdc/remote.py`), as planned below except:
+
+- **What runs remotely:** `reply`, `index`, `argue`, `analyze`, `audit`,
+  `export`, `pdf`, `review` and `files` (it lists what the server's key
+  uploaded), whenever the config has `server_url`, `server_token` and a
+  `[libraries."<id>"] local_root` holding the working directory (or `--lib`).
+  `mdc sync` syncs alone. The server's own runs set `MDC_RUN_LOCAL`, so they
+  never turn client.
+- **Sync** is three-way per file: here (L), on the server (R), and as both
+  last agreed (B, in the local library's `.mdc/sync.json`). Only L changed:
+  push (`PUT`/`DELETE` with `If-Match`). Only R changed: pull. Both: a
+  conflict, the server's version saved as `<name>.server` (never synced),
+  nothing merged; deleting that copy keeps the local version, which the next
+  sync pushes. A conflict before a run stops it; one after (an edit made
+  during the run) is left for the user. The first sync, with no sync.json,
+  takes the server's state as B, so the Mac re-seeds the server.
+- **`reply --watch`** watches the local file and replies remotely.
+- **The editor plugins** make the buffer read-only while `reply` runs and
+  writable again when it ends, reverting on success.
+- **What the Mac stops holding** is its configuration, not code: the model
+  key leaves `config.toml` (the server runs the same `config.py`, reading its
+  key from `.env`). The Mac's `.mdc/` index state stays: `validate` still
+  reads it to resolve Related titles, so it ages until `validate` asks the
+  server instead.
+
+**Left, each on its own go-ahead:** land `client`; `bin/deploy` (the server
+must allow `files` and set `MDC_RUN_LOCAL`); add the `[libraries]` entry to the
+Mac's config; the first `mdc sync`, which re-seeds the server's copy; remove
+`anthropic_api_key` from the Mac's config; the checks below by hand.
+
+The plan as written before building:
 
 - `~/.config/mdc/config.toml`: `server_url`, `server_token`, `user_names`
   (sent with every run), and the libraries it mirrors:

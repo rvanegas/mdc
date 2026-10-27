@@ -400,6 +400,24 @@ curl -N -H "Authorization: Bearer $T" -H "Content-Type: application/json" \
 
 `PUT …/files/{path}` creates a file with `If-None-Match: *` and replaces one with `If-Match: "<sha256>"`; `DELETE` takes `If-Match`. `run` streams `output` events and ends with `done`: the exit code and the files the run changed or deleted.
 
+### `mdc sync` and the server
+
+With mdc's server configured, the model-backed commands (`reply`, `index`, `argue`, `analyze`, `audit`, `export`, `pdf`, `review`, `files`) run there, on its keys, and this machine holds none:
+
+```toml
+# ~/.config/mdc/config.toml
+server_url = "https://mdc.rvanegas.co"
+server_token = "..."          # minted on the server by scripts/add_token.py
+user_names = ["Rodrigo"]      # sent with every run
+
+[libraries."rodvandur/philosophy"]
+local_root = "~/Documents/Writing/Chats"
+```
+
+In a mirrored library each such command syncs the library with the server's copy, runs there with its output streaming here, and syncs the results back. `mdc sync` syncs alone. `check`, `validate`, `fix`, `new`, `edit` and `diff` stay local.
+
+Sync never merges. A file changed both here and on the server since they last agreed is a conflict: the server's version is saved beside yours as `<name>.server`, and a run will not start until it is settled. Delete the `.server` copy to keep yours (the next sync sends it), or replace yours with it.
+
 ## Editor Integration
 
 The `editors/` directory contains plugins for Emacs and Sublime Text. Both auto-activate on any file whose name matches the MDC convention (`yyyy-mm-dd-*.md`).

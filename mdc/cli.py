@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from mdc.config import load_config
+from mdc.remote import REMOTE_COMMANDS
 from mdc.form import check_file, check_global_issues, fix_exported_chat, fix_object_replacement, fix_rtl_spans, fix_section_spacing, fix_title_section, slugify
 from mdc.transcript import TranscriptError, parse_transcript
 from mdc.assets import collect_local_assets
@@ -167,8 +168,9 @@ def _resolve_edit_paths(s: str, cwd: Path) -> list[Path]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
 
     if args.command == "serve":
         from mdc.server import run_serve
@@ -181,6 +183,22 @@ def main(argv: list[str] | None = None) -> int:
     # The run's library, for every load_config() below.
     if args.lib:
         os.environ["MDC_LIBRARY"] = str(Path(args.lib).expanduser().resolve())
+
+    # In a library mirrored from mdc's server, model-backed commands run there
+    # (SERVER.md, Phase 3); sync runs alone.
+    if args.command in REMOTE_COMMANDS or args.command == "sync":
+        from mdc.remote import mirror_for, remote_argv, run_remote, watch_remote
+        config = load_config()
+        mirror = mirror_for(config, Path.cwd())
+        if mirror:
+            library_id, root = mirror
+            run_argv = [] if args.command == "sync" else remote_argv(raw_argv, Path.cwd())
+            if args.command == "reply" and args.watch:
+                return watch_remote(config, library_id, root, run_argv, args.path)
+            return run_remote(config, library_id, root, run_argv)
+        if args.command == "sync":
+            print("Error: sync needs server_url, server_token and a [libraries] entry whose local_root holds this directory.")
+            return 1
 
     try:
         if args.command == "review":
@@ -631,6 +649,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve_parser.add_argument("--host", default="127.0.0.1", help="Interface to bind. Default: 127.0.0.1.")
     serve_parser.add_argument("--port", type=int, default=8001, help="Port to bind. Default: 8001.")
+
+    # sync
+    subparsers.add_parser(
+        "sync",
+        help="Sync this library with its copy on mdc's server (SERVER.md, Phase 3).",
+    )
 
     # files
     files_parser = subparsers.add_parser(

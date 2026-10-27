@@ -67,6 +67,11 @@ class AppConfig:
     roxana_web_url: str | None = None
     dianoia_api_url: str | None = None
     dianoia_token: str | None = None
+    # mdc's API (SERVER.md, Phase 3): where the model-backed commands run, and
+    # which libraries this machine mirrors (library id → local root).
+    server_url: str | None = None
+    server_token: str | None = None
+    mirrors: tuple[tuple[str, Path], ...] = ()
 
 
 def _write_default_config(path: Path) -> None:
@@ -116,6 +121,15 @@ def load_config() -> AppConfig:
     dianoia_api_url = str(data.get("dianoia_api_url", "")).strip() or os.environ.get("DIANOIA_API_URL", "").strip() or None
     dianoia_token = str(data.get("dianoia_token", "")).strip() or os.environ.get("DIANOIA_TOKEN", "").strip() or None
 
+    server_url = (str(data.get("server_url", "")).strip() or os.environ.get("MDC_SERVER_URL", "").strip()).rstrip("/") or None
+    server_token = str(data.get("server_token", "")).strip() or os.environ.get("MDC_SERVER_TOKEN", "").strip() or None
+    libraries = data.get("libraries", {})
+    mirrors = tuple(
+        (str(library_id), Path(str(spec["local_root"])).expanduser().resolve())
+        for library_id, spec in (libraries.items() if isinstance(libraries, dict) else ())
+        if isinstance(spec, dict) and spec.get("local_root")
+    )
+
     return AppConfig(
         model=model,
         system_prompt=system_prompt,
@@ -131,6 +145,9 @@ def load_config() -> AppConfig:
         roxana_web_url=roxana_web_url,
         dianoia_api_url=dianoia_api_url,
         dianoia_token=dianoia_token,
+        server_url=server_url,
+        server_token=server_token,
+        mirrors=mirrors,
     )
 
 
