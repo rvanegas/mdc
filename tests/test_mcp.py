@@ -91,8 +91,15 @@ def text(result) -> str:
 
 def test_tools_and_auth(library):
     root, url = library
-    assert [t.name for t in call(url, "ann", None, None).tools] == [
-        "list_documents", "lookup_term", "read_document", "read_file", "edit_file", "append_turn"]
+    tools = {t.name: t.description for t in call(url, "ann", None, None).tools}
+    assert list(tools) == ["guide", "list_documents", "lookup_term", "read_document",
+                           "read_file", "edit_file", "append_turn"]
+    # claude.ai shows the model tool descriptions, not server instructions:
+    # the guidance travels in guide, and the essentials in the descriptions.
+    assert "<date>-<slug>.<role>.<ext>" in text(call(url, "ann", "guide", {}))
+    assert "<date>-<slug>.<role>.<ext>" in tools["list_documents"]
+    assert "never renumber" in tools["edit_file"]
+    assert "| *Exact Title*" in tools["read_document"]
     assert httpx.post(f"{url}/mcp", json={}).status_code == 401
     assert httpx.post(f"{url}/mcp", json={}, headers={"Authorization": "Bearer nope"}).status_code == 401
     meta = httpx.get(f"{url}/.well-known/oauth-protected-resource/mcp").json()

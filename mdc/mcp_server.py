@@ -170,9 +170,19 @@ async def _locked(root: Path):
 # ---------------------------------------------------------------------------
 
 @_tool
+def guide() -> str:
+    """The user's mdc library: read this once per conversation, before the other
+    mdc tools. How the library is organized, how to find and cite its documents,
+    the rules for editing documents and argument files, and how to keep this
+    conversation in the library."""
+    return INSTRUCTIONS
+
+
+@_tool
 def list_documents(query: str = "", library: str | None = None) -> str:
-    """List the library's indexed documents: name, title and date. With a query,
-    only those whose title, summary or index terms match it, best first."""
+    """List the library's indexed documents: name and title, newest first. With a
+    query, only those whose title, summary or index terms match it, best first.
+    Files are named <date>-<slug>.<role>.<ext> (role: chat, document, source, argument, analysis or review; e.g. 2026-06-29-the-eleatic-critique.chat.md), kept in a folder per year, and a name is unique across the library. Call guide first if you have not."""
     root = _root(library)
     entries = lib.load_entries(root)
     if query:
@@ -186,20 +196,26 @@ def list_documents(query: str = "", library: str | None = None) -> str:
 
 @_tool
 def lookup_term(term: str, library: str | None = None) -> str:
-    """Look up an index term: the documents that carry it, with summaries, and related terms."""
+    """Look up an index term: the documents that carry it, with summaries, and
+    related terms to follow. Look up every plausibly relevant term before
+    answering; the documents are the user's own writing, dated, and later ones
+    may supersede earlier. Call guide first if you have not."""
     return lib.lookup_term(_root(library), term)
 
 
 @_tool
 def read_document(path: str, library: str | None = None) -> str:
-    """Read an indexed document in full, by the path lookup_term gives (e.g. 2026/<name>)."""
+    """Read an indexed document in full, by the path lookup_term gives (e.g.
+    2026/<name>). Cite a library document only after reading it, under a
+    '## Related' section, one per line as '| *Exact Title*'."""
     return lib.read_document(_root(library), path)
 
 
 @_tool
 def read_file(name: str, library: str | None = None) -> str:
-    """Read any text file of the library by its name: a chat, document, argument,
-    analysis, review or text source."""
+    """Read any text file of the library by its name. Files are named <date>-<slug>.<role>.<ext> (role: chat, document, source, argument, analysis or review; e.g. 2026-06-29-the-eleatic-critique.chat.md), kept in a folder per year, and a name is unique across the library. A source is
+    third-party material, not the user's writing; an analysis or review is
+    written by mdc."""
     path = _find(_root(library), name)
     try:
         return path.read_text(encoding="utf-8")
@@ -209,8 +225,12 @@ def read_file(name: str, library: str | None = None) -> str:
 
 @_tool
 async def edit_file(name: str, old_str: str, new_str: str, library: str | None = None) -> str:
-    """Replace old_str, which must occur in the file, with new_str in a .document.md
-    or .argument.md. A numbered backup is kept; returns the diff."""
+    """Replace old_str, which must occur exactly once in the file, with new_str,
+    in a .document.md (the user's prose) or .argument.md; nothing else is edited.
+    Apply the change directly, then say in a sentence or two what changed. In an
+    .argument.md, which holds only a '## Argument' list ('- 3 (from: 1, 2): text'),
+    never renumber or reorder propositions: add new ones at the end with the next
+    number. A numbered version is kept; returns the diff. See guide."""
     root = _root(library)
     path = _find(root, name)
     if not path.name.endswith((".document.md", ".argument.md")):
@@ -225,9 +245,12 @@ async def edit_file(name: str, old_str: str, new_str: str, library: str | None =
 
 @_tool
 async def append_turn(name: str, speaker: str, text: str, library: str | None = None) -> str:
-    """Add a turn to a .chat.md, before its Notes, Related and References. speaker is
-    a one-word heading: "Prompt" for the user's message, "Claude" for yours. A chat
-    named <date>-<slug>.chat.md that does not exist yet is created in its year."""
+    """Keep this conversation in the library: add a turn to a .chat.md, before its
+    Notes, Related and References. speaker is a one-word heading: "Prompt" for
+    the user's message, as they wrote it, "Claude" for your reply. When the user
+    wants the conversation kept, call it after each exchange, the user's turn
+    first. A chat named <date>-<slug>.chat.md (today's date, a slug of its title)
+    that does not exist yet is created in its year."""
     root = _root(library)
     if not name.endswith(".chat.md") or "/" in name:
         raise ToolError("append_turn writes to a <date>-<slug>.chat.md, named")

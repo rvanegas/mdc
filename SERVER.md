@@ -535,6 +535,12 @@ below, and:
   is the latest version, so every write can be undone from `REVISIONS/`.
 - **`reply`'s library instructions** are `library.LIBRARY_TOOLS_PROMPT`,
   shared with the MCP server's instructions.
+- **claude.ai does not show the model a server's instructions** (found
+  2026-10-27: asked, Claude saw only the tool descriptions). So the guidance
+  is also a tool, `guide`, which the other descriptions point to, and the
+  rules that matter most are in the descriptions themselves: the naming
+  scheme, citing only what was read, never renumbering propositions, what
+  `append_turn`'s speakers mean.
 
 Connect Claude Code with a token from `users.toml` (for instance the Mac's
 `server_token`): `claude mcp add --transport http mdc
