@@ -286,10 +286,40 @@ The plan as written before building (its workspace layout is superseded by
   `server/deployed.json` pattern). `bin/deploy` ends in a health check against
   `https://mdc.rvanegas.co/healthz`.
 
-## Phase 2 — the API (`mdc serve`)
+## Phase 2 — the API (`mdc serve`) — built 2026-10-26, not yet deployed
 
 FastAPI + uvicorn in `mdc/server.py`, the same stack as dianoia, grown from
 Phase 1's `/healthz`.
+
+**Built** on mdc branch `api`, as planned below except where noted here:
+
+- **Preconditions are HTTP's own:** `PUT` creates with `If-None-Match: *` and
+  replaces with `If-Match: "<sha256>"` (`If-Match: *` means the opposite in
+  HTTP); a stale one gets 412 Precondition Failed, a missing one 428. 409 is
+  for a library busy with a run, which also refuses writes. Writes are atomic.
+  Every dotfile is hidden, not only `.mdc/`.
+- **`/run` takes names, not paths:** mdc runs from the library root, and its
+  CLI now resolves a name or an abbreviation across the library (the
+  migration had broken abbreviations: every file has a role now). `mdc new`
+  writes into this year's directory. Output streams as `output` events of
+  `{text}` chunks, not lines (reply prints tokens without newlines), then a
+  `done` event, or `error` if the run could not start. The run belongs to
+  the server: a client that goes away does not cut it short. Allowed:
+  `check validate fix new reply index argue analyze audit export pdf diff
+  review`; `--lib` and `reply --watch` are refused.
+- **Tokens:** `scripts/add_token.py <user>` prints a new token once and
+  appends its SHA-256 to `users.toml` (mode 600); `"*"` is a service. The file
+  is read on every request, so a token works without a restart.
+- **Nightly:** `bin/nightly-index`, for cron on the box, lists the libraries
+  with a service token from `~/.config/mdc/nightly-token` (outside `~/mdc`,
+  which deploys mirror with `--delete`) and runs `index` in each through
+  `/run`. There is no `relate`: relations are part of `index`.
+
+**Left, each on its own go-ahead:** land `api`; `bin/deploy`; mint Rodrigo's
+token and the service token on the box; install the cron entry; `curl -N` a
+`reply` through Caddy.
+
+The plan as written before building:
 
 - **Auth:** a bearer token per user, hashed in `/data/users.toml` (token hash
   → user), required on every route except `/healthz`. A user reaches only

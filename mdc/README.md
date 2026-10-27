@@ -388,7 +388,17 @@ mdc serve                          # 127.0.0.1:8001
 mdc serve --host 0.0.0.0 --port 8001
 ```
 
-For now it answers only `GET /healthz`: `{"ok": true, "commit": ...}`, with the commit stamped by `bin/deploy` (`"dev"` in a checkout).
+`GET /healthz` is open. Everything else needs `Authorization: Bearer <token>` (minted by `scripts/add_token.py`) and works on the caller's libraries, `$MDC_DATA_DIR/libraries/<user>/<library>`:
+
+```bash
+curl -H "Authorization: Bearer $T" https://mdc.rvanegas.co/libraries
+curl -H "Authorization: Bearer $T" https://mdc.rvanegas.co/libraries/rodvandur/philosophy/files
+curl -N -H "Authorization: Bearer $T" -H "Content-Type: application/json" \
+  -d '{"argv": ["reply", "eleatic"], "user_names": ["Rodrigo"]}' \
+  https://mdc.rvanegas.co/libraries/rodvandur/philosophy/run
+```
+
+`PUT …/files/{path}` creates a file with `If-None-Match: *` and replaces one with `If-Match: "<sha256>"`; `DELETE` takes `If-Match`. `run` streams `output` events and ends with `done`: the exit code and the files the run changed or deleted.
 
 ## Editor Integration
 
