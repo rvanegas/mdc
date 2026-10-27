@@ -141,14 +141,15 @@ def test_run_refuses(client, argv):
 
 def test_one_run_at_a_time_and_no_writes_meanwhile(client, data):
     import asyncio
-    lock = server._locks.setdefault(data / "libraries/ann/philosophy", asyncio.Lock())
+    from mdc import service
+    lock = service.lock_for(data / "libraries/ann/philosophy")
     asyncio.run(lock.acquire())
     try:
         assert client.post(f"{BASE}/run", headers=ANN, json={"argv": ["check", "old-roman"]}).status_code == 409
         assert client.put(f"{BASE}/files/2026/x.document.md", headers={**ANN, "If-None-Match": "*"}, content=b"x").status_code == 409
     finally:
         lock.release()
-        server._locks.clear()
+        service.locks.clear()
 
 
 def test_add_token(tmp_path):

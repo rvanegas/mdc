@@ -27,17 +27,19 @@ from __future__ import annotations
 import asyncio
 import codecs
 import hashlib
-import hmac
 import json
 import os
 import re
 import sys
-import tomllib
+from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+from mdc import service
+from mdc.service import LibraryError, library_ids, library_root, lock_for, user_for_token
 
 # Written by bin/deploy into the package before the image is built, so it is
 # baked in with the code it describes. Absent in a checkout, where the answer
@@ -51,13 +53,22 @@ RUNNABLE = frozenset({
     "check", "validate", "fix", "new", "reply", "index",
     "argue", "analyze", "audit", "export", "pdf", "diff", "review", "files",
 })
-_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _USER_NAME_RE = re.compile(r"^[^\s,]+$")
 
-app = FastAPI(title="mdc")
-
-_locks: dict[Path, asyncio.Lock] = {}
 _runs: set[asyncio.Task] = set()
+
+# The MCP server (SERVER.md, Phase 5) answers at /mcp, mounted below the
+# API's routes; its session manager lives as long as the app.
+from mdc.mcp_server import mcp_app, mcp_lifespan
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    async with mcp_lifespan():
+        yield
+
+
+app = FastAPI(title="mdc", lifespan=_lifespan)
 
 
 def _deployed() -> dict:
@@ -65,10 +76,6 @@ def _deployed() -> dict:
         return json.loads(_DEPLOYED.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"commit": "dev"}
-
-
-def _data_dir() -> Path:
-    return Path(os.environ.get("MDC_DATA_DIR", "/data"))
 
 
 @app.get("/healthz")
@@ -85,37 +92,22 @@ def caller(authorization: str | None = Header(default=None)) -> str:
     """The user a bearer token belongs to, or "*" for a service."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "a bearer token is required")
-    digest = hashlib.sha256(authorization.removeprefix("Bearer ").strip().encode()).hexdigest()
-    try:
-        users = tomllib.loads((_data_dir() / "users.toml").read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        users = {}
-    for token in users.get("tokens", []):
-        if hmac.compare_digest(str(token.get("sha256", "")), digest):
-            return str(token["user"])
-    raise HTTPException(401, "unknown token")
+    who = user_for_token(authorization.removeprefix("Bearer "))
+    if who is None:
+        raise HTTPException(401, "unknown token")
+    return who
 
 
 def library(user: str, library: str, who: str = Depends(caller)) -> Path:
-    if who not in (user, "*"):
-        raise HTTPException(403, "not your library")
-    if not (_NAME_RE.match(user) and _NAME_RE.match(library)):
-        raise HTTPException(404, "no such library")
-    root = _data_dir() / "libraries" / user / library
-    if not root.is_dir():
-        raise HTTPException(404, "no such library")
-    return root
+    try:
+        return library_root(user, library, who)
+    except LibraryError as exc:
+        raise HTTPException(exc.status, str(exc)) from None
 
 
 @app.get("/libraries")
 def libraries(who: str = Depends(caller)) -> dict:
-    base = _data_dir() / "libraries"
-    users = [base / who] if who != "*" else sorted(p for p in base.iterdir() if p.is_dir()) if base.is_dir() else []
-    return {"libraries": [
-        f"{u.name}/{lib.name}"
-        for u in users if u.is_dir()
-        for lib in sorted(u.iterdir()) if lib.is_dir() and _NAME_RE.match(lib.name)
-    ]}
+    return {"libraries": library_ids(who)}
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +155,7 @@ def _unquote(tag: str) -> str:
 
 
 def _writable(root: Path) -> None:
-    lock = _locks.get(root)
+    lock = service.locks.get(root)
     if lock is not None and lock.locked():
         raise HTTPException(409, "a run is in progress in this library")
 
@@ -251,7 +243,7 @@ def _check_run(run: Run) -> None:
 @app.post("/libraries/{user}/{library}/run")
 async def run_command(run: Run, root: Path = Depends(library)) -> StreamingResponse:
     _check_run(run)
-    lock = _locks.setdefault(root, asyncio.Lock())
+    lock = lock_for(root)
     if lock.locked():
         raise HTTPException(409, "a run is in progress in this library")
     await lock.acquire()
@@ -306,3 +298,7 @@ def run_serve(host: str, port: int) -> int:
     import uvicorn
     uvicorn.run(app, host=host, port=port)
     return 0
+
+
+# Last, so the API's own routes answer first.
+app.mount("/", mcp_app)

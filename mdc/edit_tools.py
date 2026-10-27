@@ -137,11 +137,12 @@ def build_edit_context(targets: list[Path], wrap_width: int = 100, revisions_dir
 
 
 def _write_version(path: Path, content: str, revisions_dir: Path | None = None) -> None:
-    """Write content to path and to a new numbered revision file.
+    """Write content to path, keeping numbered versions in revisions_dir.
 
-    The numbered file is only created if path currently matches the latest
-    revision (i.e. no manual edits since the last automated write). If path
-    has diverged, only the current file is updated.
+    Every automated write is recorded as the next version. Before it, the
+    file's current text is recorded too unless it already is the latest
+    version: the original before a first edit, or hand edits made since the
+    last automated write. So any write can be undone from REVISIONS/.
     """
     stem = path.stem
     suffix = path.suffix
@@ -161,8 +162,11 @@ def _write_version(path: Path, content: str, revisions_dir: Path | None = None) 
     current = path.read_text(encoding="utf-8") if path.exists() else None
     latest_content = latest_revision.read_text(encoding="utf-8") if latest_revision else None
 
-    if current is None or latest_content is None or current == latest_content:
-        rev_dir.mkdir(parents=True, exist_ok=True)
+    rev_dir.mkdir(parents=True, exist_ok=True)
+    if current is not None and current != latest_content and current != content:
+        highest += 1
+        (rev_dir / f"{stem}--{highest}{suffix}").write_text(current, encoding="utf-8")
+    if content != current or latest_content != content:
         (rev_dir / f"{stem}--{highest + 1}{suffix}").write_text(content, encoding="utf-8")
 
     path.write_text(content, encoding="utf-8")

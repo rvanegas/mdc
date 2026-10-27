@@ -869,6 +869,27 @@ def search_library(index: list[DocEntry], query: str) -> list[DocEntry]:
     return [e for _, e in scored[:5]]
 
 
+# How the model is to use the library tools: in reply's system prompt, and
+# in the MCP server's instructions (SERVER.md, Phase 5).
+LIBRARY_TOOLS_PROMPT = (
+    "You have access to the Personal Library — a collection of the user's own writings. "
+    "To find relevant material:\n"
+    "1. Call lookup_term with a relevant index term. It returns matching Personal Library documents with summaries and related terms.\n"
+    "2. Call read_document when you need the full text of a specific Personal Library document.\n"
+    "Follow the Related terms from each lookup to discover adjacent material, and look up all "
+    "plausibly relevant terms before composing your reply. "
+    "Documents have dates and views may evolve or be superseded; prefer more recent documents "
+    "when there is tension between them, and flag apparent contradictions to the user.\n"
+    "Only include a Personal Library document in your reply if you have called read_document on it. "
+    "List any newly cited works under '## References' — additions only; do not repeat works already in the accumulated references. "
+    "Do not insert a horizontal rule before these sections.\n\n"
+    "List Personal Library documents under '## Related', one per line, formatted exactly as follows "
+    "(the section implies the source; no date, author, or other annotation):\n\n"
+    "| *Exact Title*\n"
+    "| *Exact Title of Another Document*\n\n"
+    "The title MUST be wrapped in a single pair of asterisks — do not omit them."
+)
+
 LIBRARY_TOOLS = [
     {
         "name": "lookup_term",

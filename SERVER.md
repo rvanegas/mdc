@@ -499,7 +499,7 @@ before it is written; names stay unique across the library.
   importing one real claude.ai conversation and replying to it with
   `mdc reply`.
 
-## Phase 5 — claude.ai reaches the library — planned 2026-10-27
+## Phase 5 — claude.ai reaches the library — 5a built 2026-10-27, not yet deployed
 
 Claude on claude.ai (web, phone, Desktop) gets the tools `mdc reply` gives
 the model, on Rodrigo's libraries, through a custom connector: a remote MCP
@@ -512,6 +512,40 @@ endpoint, and the library and keys are already on `commons`. Phase 4's
 badly.
 
 ### 5a — the tools, in-process, behind `/mcp`
+
+**Built** on mdc branch `mcp` (`mdc/mcp_server.py`, `mdc/service.py`), with
+the official SDK `mcp` 2.3 (its `MCPServer`, formerly FastMCP). As planned
+below, and:
+
+- **Auth already goes through the SDK's OAuth resource-server machinery:**
+  one `TokenVerifier` (5a: `users.toml` tokens; 5b adds Cognito's), and the
+  protected-resource metadata at `/.well-known/oauth-protected-resource/mcp`
+  already names Roxana's pool as the authorization server. Without a token,
+  `/mcp` answers 401.
+- **`mdc/service.py`** holds what `/run` and `/mcp` share: token lookup,
+  library resolution, the per-library locks.
+- **A fresh MCP server per app lifespan**, behind a small mount: a
+  streamable-HTTP session manager runs only once. Stateless HTTP; allowed
+  hosts `mdc.rvanegas.co` and loopback, origins claude.ai and claude.com.
+- **Tools report anticipated failures as `ToolError`**, whose message the
+  model sees (2.x hides other exceptions' text).
+- **Versions:** `reply` kept the text before an edit only when re-wrapping
+  had changed it. `_write_version`, shared by `reply` and `edit_file`, now
+  records a file's current text before an automated write unless it already
+  is the latest version, so every write can be undone from `REVISIONS/`.
+- **`reply`'s library instructions** are `library.LIBRARY_TOOLS_PROMPT`,
+  shared with the MCP server's instructions.
+
+Connect Claude Code with a token from `users.toml` (for instance the Mac's
+`server_token`): `claude mcp add --transport http mdc
+https://mdc.rvanegas.co/mcp --header "Authorization: Bearer <token>"`.
+
+**Left for 5a, each on its own go-ahead:** land `mcp`; `bin/deploy`; connect
+Claude Code and check by hand a `lookup_term`, an `edit_file` whose backup
+appears, and the edit reaching the Mac with `mdc sync`.
+
+The plan:
+
 
 - **Lift the tools out of `reply`.** Their executors are closures built in
   `cmd_reply.py` (`_reply_anthropic`); they move to one module, called by
