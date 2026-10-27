@@ -381,7 +381,7 @@ The plan as written before building:
   and stream through the clients' existing `on_delta` callbacks. That
   retires the subprocess.
 
-## Phase 3 — the local CLI becomes a client — in use 2026-10-27
+## Phase 3 — the local CLI becomes a client — done 2026-10-27
 
 **Built** on mdc branch `client` (`mdc/remote.py`), as planned below except:
 
@@ -421,9 +421,18 @@ documents, all cached) and synced back the `MANIFEST.md` it rewrote; `mdc
 files ls` listed what the server's key uploaded; `mdc check` stayed local; a
 second `mdc sync` had nothing to do.
 
-**Left:** by hand, Emacs `C-c C-r` on a `.chat.md` with a `.document.md`
-companion, then `mdc reply -l`. Two older copies of the Mac's config still
-hold keys: `~/.config/mdc/config.toml.bak-2026-10-25` and `config.toml~`.
+**Checked by hand** in Emacs on a test pair
+(`2026-10-27-remote-reply-test.{chat,document}.md`): `C-c C-r` synced the
+prompt, Claude on the server edited the `.document.md` with `edit_file`, and
+the chat, the document and their backups came back (Mac and server
+byte-identical; `mdc diff` shows the edit); `reply -l` looked up a term and
+answered with a Related section. The first try showed that `reply` loaded a
+chat's companions only with `-e`, which no editor command passed; since
+`4c07778` it loads them whenever they exist, and the sync leaves editor
+backups and autosaves alone.
+
+Two older copies of the Mac's config still hold keys:
+`~/.config/mdc/config.toml.bak-2026-10-25` and `config.toml~`.
 
 The plan as written before building:
 
