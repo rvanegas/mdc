@@ -294,7 +294,7 @@ The plan as written before building (its workspace layout is superseded by
   `server/deployed.json` pattern). `bin/deploy` ends in a health check against
   `https://mdc.rvanegas.co/healthz`.
 
-## Phase 2 — the API (`mdc serve`) — deployed 2026-10-27; the nightly cron entry is left
+## Phase 2 — the API (`mdc serve`) — done 2026-10-27
 
 FastAPI + uvicorn in `mdc/server.py`, the same stack as dianoia, grown from
 Phase 1's `/healthz`.
@@ -339,12 +339,9 @@ backups `reply` pruned for age as deleted); both were then removed with
 `bin/nightly-index` run by hand on the box indexed the library through the
 API with the service token (exit 0, nothing to summarize).
 
-**Left:** the cron entry on the box, which installs a recurring job and so is
-Rodrigo's to add:
-
-```bash
-ssh -i ~/.ssh/lightsail-ubuntu ubuntu@32.190.173.222 'mkdir -p ~/.local/state; (crontab -l 2>/dev/null | grep -v mdc/bin/nightly-index; echo "30 9 * * * \$HOME/mdc/bin/nightly-index >> \$HOME/.local/state/mdc-nightly.log 2>&1") | crontab -'
-```
+**Cron:** installed by Rodrigo 2026-10-27 (a recurring job is theirs to add):
+`30 9 * * * $HOME/mdc/bin/nightly-index >> $HOME/.local/state/mdc-nightly.log 2>&1`
+in the box's crontab, half an hour before the daily snapshot.
 
 The plan as written before building:
 
