@@ -384,7 +384,7 @@ The plan as written before building:
   and stream through the clients' existing `on_delta` callbacks. That
   retires the subprocess.
 
-## Phase 3 — the local CLI becomes a client — built 2026-10-27, not yet deployed
+## Phase 3 — the local CLI becomes a client — in use 2026-10-27
 
 **Built** on mdc branch `client` (`mdc/remote.py`), as planned below except:
 
@@ -411,10 +411,22 @@ The plan as written before building:
   reads it to resolve Related titles, so it ages until `validate` asks the
   server instead.
 
-**Left, each on its own go-ahead:** land `client`; `bin/deploy` (the server
-must allow `files` and set `MDC_RUN_LOCAL`); add the `[libraries]` entry to the
-Mac's config; the first `mdc sync`, which re-seeds the server's copy; remove
-`anthropic_api_key` from the Mac's config; the checks below by hand.
+**Deployed** master `3720636` (2026-10-27). The Mac's config mirrors
+`rodvandur/philosophy` from `~/Documents/Writing/Chats`; the first `mdc sync`
+re-seeded the server's copy (19 sent, 0 received: the 18 backups a test
+`reply` had pruned there, and `MANIFEST.md`), and agrees on 1,336 files. The
+Mac's config no longer holds `anthropic_api_key`, `dianoia_token` or
+`roxana_api_key` (none is in its environment either): those commands run on
+the server.
+
+**Verified** with no key on the Mac: `mdc index` ran on the server (632
+documents, all cached) and synced back the `MANIFEST.md` it rewrote; `mdc
+files ls` listed what the server's key uploaded; `mdc check` stayed local; a
+second `mdc sync` had nothing to do.
+
+**Left:** by hand, Emacs `C-c C-r` on a `.chat.md` with a `.document.md`
+companion, then `mdc reply -l`. Two older copies of the Mac's config still
+hold keys: `~/.config/mdc/config.toml.bak-2026-10-25` and `config.toml~`.
 
 The plan as written before building:
 
