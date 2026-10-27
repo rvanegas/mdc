@@ -34,7 +34,11 @@ def data_dir() -> Path:
 
 def user_for_token(token: str) -> str | None:
     """The user a bearer token belongs to, "*" for a service, None if unknown."""
-    digest = hashlib.sha256(token.strip().encode()).hexdigest()
+    return user_for_token_hash(hashlib.sha256(token.strip().encode()).hexdigest())
+
+
+def user_for_token_hash(digest: str) -> str | None:
+    """As user_for_token, given the token's SHA-256."""
     try:
         users = tomllib.loads((data_dir() / "users.toml").read_text(encoding="utf-8"))
     except FileNotFoundError:

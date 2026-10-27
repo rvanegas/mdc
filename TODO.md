@@ -28,4 +28,6 @@
 
 - POST /libraries/{user}/{library} to create a library, with the first client that needs it
 
+- a real identity plan, for mdc's tools, The Floor and claude.ai together: The Floor signs in with emailed codes and no passwords; mdc's OAuth server (oauth.py) meanwhile signs people in by pasting their mdc token, the one step such a plan replaces (SERVER.md, Phase 5b)
+
 - manual tests for mdc import (SERVER.md, Phase 4; the tests use fixtures written from the formats as documented, not real files): run `mdc import` on a real claude.ai data export (Settings → Privacy → Export data; the zip, then `--only` one conversation) and on a real saveai.net Claude export; check turns, the branch kept for edited messages, attachments, and that each imported chat passes `mdc check`; then `mdc reply` to one imported chat. If either format differs from tests/fixtures/, re-record the fixture from the real file and adjust cmd_import.py

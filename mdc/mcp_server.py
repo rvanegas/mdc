@@ -6,9 +6,9 @@ Claude Desktop, Claude Code). They run in-process on the server's copy of
 the library, which is canonical; a client's next `mdc sync` brings their
 writes down, and a file also changed there becomes a `.server` conflict.
 
-Callers authenticate with a bearer token. Phase 5a: a token minted by
-scripts/add_token.py (as for /run). Phase 5b adds Cognito access tokens,
-through the same verifier, for claude.ai's OAuth.
+Callers authenticate with a bearer token: an OAuth access token from mdc's
+own authorization server (oauth.py; claude.ai's connector signs in there with
+the person's mdc token), or a minted mdc token sent as it is (Claude Code).
 
 Writes (edit_file, append_turn) take the library's lock, as /run does, and
 keep reply's numbered backups in REVISIONS/.
@@ -22,8 +22,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server.auth.provider import AccessToken
-from mcp.server.auth.settings import AuthSettings
+from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
@@ -32,11 +31,10 @@ from mdc import library as lib
 from mdc.config import load_config
 from mdc.edit_tools import _ARGUMENT_FORMAT, _EDIT_INSTRUCTIONS, build_edit_context, make_edit_executor
 from mdc.form import fix_section_spacing, slugify
-from mdc.service import LibraryError, library_ids, library_root, lock_for, user_for_token
+from mdc.oauth import provider
+from mdc.service import LibraryError, library_ids, library_root, lock_for
 from mdc.text_utils import _upgrade_reply_headings
 
-# Roxana's user pool, the authorization server claude.ai is sent to (Phase 5b).
-DEFAULT_ISSUER = "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_JBus4am8w"
 
 _SPEAKER_RE = re.compile(r"^[^\s#]+$")
 _STRUCTURAL_RE = re.compile(r"^## (Notes|Related|References)\s*$", re.MULTILINE)
@@ -55,16 +53,6 @@ INSTRUCTIONS = "\n\n".join([
 ])
 
 
-class TokenVerifier:
-    """Bearer tokens from users.toml; the AccessToken's subject is the mdc user."""
-
-    async def verify_token(self, token: str) -> AccessToken | None:
-        user = user_for_token(token)
-        if user is None:
-            return None
-        return AccessToken(token=token, client_id="mdc-token", scopes=[], subject=user)
-
-
 _TOOLS: list = []
 
 
@@ -73,23 +61,30 @@ def _tool(fn):
     return fn
 
 
-def build() -> tuple[MCPServer, str]:
+def build() -> MCPServer:
     """A fresh MCP server: a streamable-HTTP session manager runs only once."""
-    public_url = os.environ.get("MDC_PUBLIC_URL", "https://mdc.rvanegas.co").rstrip("/")
     server = MCPServer(
         name="mdc",
         title="mdc library",
         instructions=INSTRUCTIONS,
-        token_verifier=TokenVerifier(),
+        # mdc is its own authorization server (oauth.py), whose provider also
+        # takes a minted mdc token sent as it is.
+        auth_server_provider=provider,
         auth=AuthSettings(
-            issuer_url=os.environ.get("MDC_OAUTH_ISSUER", DEFAULT_ISSUER),
-            resource_server_url=f"{public_url}/mcp",
-            validate_token_resource=False,  # the verifier knows its tokens
+            issuer_url=public_url(),
+            resource_server_url=f"{public_url()}/mcp",
+            validate_token_resource=False,  # the provider knows its tokens
+            client_registration_options=ClientRegistrationOptions(enabled=True),
+            revocation_options=RevocationOptions(enabled=True),
         ),
     )
     for fn in _TOOLS:
         server.add_tool(fn)
-    return server, public_url
+    return server
+
+
+def public_url() -> str:
+    return os.environ.get("MDC_PUBLIC_URL", "https://mdc.rvanegas.co").rstrip("/")
 
 
 class _Mount:
@@ -111,13 +106,13 @@ mcp_app = _Mount()
 
 @asynccontextmanager
 async def mcp_lifespan():
-    server, public_url = build()
+    server = build()
     mcp_app.app = server.streamable_http_app(
         streamable_http_path="/mcp",
         stateless_http=True,
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
-            allowed_hosts=[public_url.split("://", 1)[1], "127.0.0.1:*", "localhost:*", "testserver"],
+            allowed_hosts=[public_url().split("://", 1)[1], "127.0.0.1:*", "localhost:*", "testserver"],
             allowed_origins=["https://claude.ai", "https://claude.com"],
         ),
     )

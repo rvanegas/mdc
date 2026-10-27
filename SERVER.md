@@ -499,7 +499,7 @@ before it is written; names stay unique across the library.
   importing one real claude.ai conversation and replying to it with
   `mdc reply`.
 
-## Phase 5 — claude.ai reaches the library — 5a built 2026-10-27, not yet deployed
+## Phase 5 — claude.ai reaches the library — 5a deployed 2026-10-27; 5b built
 
 Claude on claude.ai (web, phone, Desktop) gets the tools `mdc reply` gives
 the model, on Rodrigo's libraries, through a custom connector: a remote MCP
@@ -540,9 +540,10 @@ Connect Claude Code with a token from `users.toml` (for instance the Mac's
 `server_token`): `claude mcp add --transport http mdc
 https://mdc.rvanegas.co/mcp --header "Authorization: Bearer <token>"`.
 
-**Left for 5a, each on its own go-ahead:** land `mcp`; `bin/deploy`; connect
-Claude Code and check by hand a `lookup_term`, an `edit_file` whose backup
-appears, and the edit reaching the Mac with `mdc sync`.
+**Deployed** master `969eb0e` (2026-10-27): through Caddy, `/mcp` answers
+401 without a token, and with the Mac's token the server lists its six tools
+and `lookup_term` answers from the library. Claude Code holds an entry for it
+(local scope, `~/src/mdc`).
 
 The plan:
 
@@ -580,7 +581,40 @@ The plan:
   remote MCP server: a token from `users.toml` works there before any OAuth
   exists.
 
-### 5b — sign-in through Roxana's Cognito pool
+### 5b — mdc's own OAuth server, signed into with an mdc token (2026-10-27)
+
+**Decided:** real authentication, per person, with a sign-in that need not be
+easy yet. mdc is its own OAuth authorization server for claude.ai's connector
+(`mdc/oauth.py`, the MCP SDK's provider interface; the SDK serves discovery,
+`/register`, `/authorize`, `/token`, `/revoke` and checks PKCE):
+
+- **Sign-in:** claude.ai registers itself (dynamic client registration: the
+  connector needs only `https://mdc.rvanegas.co/mcp`) and opens mdc's
+  `/oauth/login`, which names the client and its redirect host; the person
+  pastes **their mdc token**, minted for them by the operator with
+  `scripts/add_token.py <user>`, and is sent back with a code.
+- **Tokens:** an access token for an hour, a refresh token for 90 days,
+  rotated on use, revocable; stored as hashes in `/data/oauth.json` (mode
+  600), so a deploy signs nobody out. Each records the mdc token that signed
+  in, and stops working when that token leaves `users.toml`: removing a
+  person's token removes their claude.ai access too.
+- **Redirects** are limited at registration to claude.ai's and claude.com's
+  callbacks and to localhost, since registration is open to anyone.
+- **A minted mdc token still works as a bearer token** (Claude Code, the
+  CLI's API calls), through the same provider.
+- **A second person:** a `users.toml` token of their own, and a library at
+  `libraries/<user>/<library>` (made by hand until there is an API for it).
+
+**Why not Cognito, nor The Floor's sign-in:** The Floor, which mdc is to
+integrate with, signs people in with emailed one-time codes, no passwords;
+Roxana's Cognito pool would have been a second identity to map, and borrowing
+The Floor's codes would have tied this to an API The Floor does not have yet.
+Pasting a token is plain, not friendly, and is the one part a real identity
+plan (TODO.md) replaces; the OAuth server around it stays. A Cognito verifier
+built first (branch `oauth`, `5e7ab3b`, not landed) is kept only in that
+commit; a secret connector URL was built and dropped before landing.
+
+The plan as it stood before (superseded):
 
 claude.ai's custom connectors sign in with OAuth. The MCP server is a
 resource server; Roxana's user pool is the authorization server.

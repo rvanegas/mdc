@@ -35,7 +35,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
 from mdc import service
@@ -298,6 +298,61 @@ def run_serve(host: str, port: int) -> int:
     import uvicorn
     uvicorn.run(app, host=host, port=port)
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Sign-in for mdc's OAuth server (oauth.py): claude.ai sends the person here
+# ---------------------------------------------------------------------------
+
+def _login_page(request_id: str, client_name: str, redirect_host: str, error: str = "") -> HTMLResponse:
+    from html import escape
+    note = f'<p class="error">{escape(error)}</p>' if error else ""
+    return HTMLResponse(f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in to mdc</title>
+<style>body{{font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1rem}}
+input{{width:100%;font:inherit;padding:.4rem;box-sizing:border-box}}button{{font:inherit;margin:.8rem .6rem 0 0}}
+.error{{color:#b00}}</style></head><body>
+<h1>Sign in to mdc</h1>
+<p><b>{escape(client_name)}</b> ({escape(redirect_host)}) asks to use your mdc libraries:
+to read them and to edit their documents.</p>
+{note}
+<form method="post" action="/oauth/login">
+<input type="hidden" name="request" value="{escape(request_id)}">
+<label>Your mdc token<br><input name="token" type="password" autocomplete="off" required autofocus></label>
+<button name="action" value="allow">Allow</button><button name="action" value="deny" formnovalidate>Deny</button>
+</form></body></html>""", headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY"})
+
+
+@app.get("/oauth/login")
+def oauth_login(request: str) -> Response:
+    from urllib.parse import urlparse
+    from mdc.oauth import provider
+    sign_in = provider.pending(request)
+    if sign_in is None:
+        return PlainTextResponse("This sign-in has expired; start again from the app.", status_code=400)
+    return _login_page(request, sign_in.client.client_name or "An application",
+                       urlparse(str(sign_in.params.redirect_uri)).hostname or "")
+
+
+@app.post("/oauth/login")
+async def oauth_login_submit(request: Request) -> Response:
+    from urllib.parse import parse_qs, urlparse
+    from mdc.oauth import provider
+    form = {k: v[0] for k, v in parse_qs((await request.body()).decode("utf-8", "replace")).items()}
+    request_id = form.get("request", "")
+    if form.get("action") == "deny":
+        target = provider.refuse(request_id)
+        return RedirectResponse(target, status_code=302) if target else PlainTextResponse("Expired.", status_code=400)
+    sign_in = provider.pending(request_id)
+    if sign_in is None:
+        return PlainTextResponse("This sign-in has expired or had too many tries; start again.", status_code=400)
+    target = provider.complete(request_id, form.get("token", ""))
+    if target is None:
+        return _login_page(request_id, sign_in.client.client_name or "An application",
+                           urlparse(str(sign_in.params.redirect_uri)).hostname or "",
+                           error="That is not an mdc token.")
+    return RedirectResponse(target, status_code=302)
 
 
 # Last, so the API's own routes answer first.
