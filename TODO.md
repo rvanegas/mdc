@@ -11,3 +11,19 @@
 - repeat if run out of letters
 
 - latex formalization
+
+## After SERVER.md (noted 2026-10-27)
+
+- validate asks the server: it still reads the Mac's local .mdc/ index state to resolve Related titles, which no longer updates; then delete the Mac's .mdc/ (sync.json moves elsewhere or stays alone)
+
+- carry moves through sync: a move (mdc fix into the year directory) syncs as delete + create, and the server summarizes the file again; detect moves by hash, or add a move endpoint that calls library.move_documents
+
+- faster deploys: install dependencies in their own Dockerfile layer before copying mdc/, so a code change does not reinstall them
+
+- broken links in rodvandur/philosophy: 2026-07-09-responsible-models.chat.md (schulte.pdf) and 2026-07-09-theory-of-desire.chat.md link deleted PDFs; 2026-03-26-amelioration-without-redefinition.chat.md links CappelenConceptualEngineering.pdf and concepteng.pdf, gone; 2026-03-24-verbal-disputes.chat.md links 2025-05-19-money-and-marriage-by-authoritative-assertion.txt, which never existed (the .md document?); 2026-06-16-all-together-now.chat.md line 665 holds the system prompt's reference template as a reference
+
+- API for clients other than the CLI (SERVER.md, Phase 2, Later): structured endpoints (create a session, list documents, reply with a JSON result) by having cmd_* return results and stream through on_delta, which retires the /run subprocess; wait for a client that needs it (The Floor)
+
+- sign-in for those users with Roxana's Cognito pool rather than minted tokens (dianoia verifies them since SITE Phase 4)
+
+- POST /libraries/{user}/{library} to create a library, with the first client that needs it
