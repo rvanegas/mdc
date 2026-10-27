@@ -189,24 +189,31 @@ tension drafts, `_phil184/conversations.zip` and the unlinked
 `2026-07-28-civilizational-conflict.pdf` went to the Trash, and
 `condensed-systematicity.{wav,pdf}` out to `~/Documents/Writing`.
 
-## Phase 1 — mdc on `commons` — built, not yet deployed
+## Phase 1 — mdc on `commons` — done 2026-10-26
 
-**Built** 2026-10-25 on `server-phase1` (landed on master `49e68a2`):
-`Dockerfile`, `docker-compose.yml`, `.dockerignore`, `bin/deploy`, `mdc serve`
-with `GET /healthz` (`mdc/server.py`), and the Caddy block on rvanegas-site's
-master (not yet installed on the box). Reworked 2026-10-26 on
-`library-layout` for *Where things live*. The image has not been built
-anywhere yet (no Docker on the Mac); its first build is the first deploy.
+**Deployed** master `0254d78` to `commons`, answering at
+`https://mdc.rvanegas.co/healthz`: the image (`Dockerfile`,
+`docker-compose.yml`, `etc/config.toml`), `bin/deploy`, `mdc serve` with
+`GET /healthz`, and the Caddy block (rvanegas-site master, installed
+2026-10-26; the old Caddyfile kept as `/etc/caddy/Caddyfile.bak-2026-10-26`).
+The `mdc` A record went in 2026-10-25 (DNS.md). The box's `~/mdc/.env`
+holds `ANTHROPIC_API_KEY`, `ROXANA_API_KEY` and `DIANOIA_TOKEN` (the token
+matches dianoia's `MDC_TOKEN`); `OPENAI_API_KEY` left it with OpenAI.
 
-**Done:** the `mdc` A record (2026-10-25, DNS.md); the box's `~/mdc/.env`
-with `ANTHROPIC_API_KEY`, `ROXANA_API_KEY` and `DIANOIA_TOKEN`
-(2026-10-26; the token matches dianoia's `MDC_TOKEN`). Its `OPENAI_API_KEY`
-goes with OpenAI, retired 2026-10-26 along with Ollama: mdc uses Anthropic
-alone.
+**Seeded** `rodvandur/philosophy` at `/srv/mdc/libraries/rodvandur/philosophy`
+from the migrated Mac library (*Library layout*), mirrored with
+`rsync --delete` (1,339 files, no difference from the Mac), and the
+content-keyed asset cache at `/srv/mdc/cache`.
 
-**Left, in order, each on its own go-ahead:** land `library-layout`; migrate
-the Mac; seed `rodvandur/philosophy`; install the Caddyfile; `bin/deploy`;
-the smoke test.
+**Verified** on the box, each command run as the API will run it (in the
+library, `MDC_USER_NAMES=Rodrigo`): `config`, `new`, `check`, `index` (632
+documents, all cached), `reply` with an asset, with companions and with `-l`,
+`argue`, `analyze` (all six dianoia agents), `audit`, `export --dry-run`,
+`pdf`; `pytest` in the image (220 passed); a source's bytes hit the seeded
+cache. The smoke test found three defects, fixed before the last deploy: the
+image lacked `scripts/` (its tests could not load them), `pdf` opened its
+output with xdg-utils' `open`, and the cache keyed by path and time missed
+on every seeded asset, which led to *Library layout*.
 
 Decided while building:
 
@@ -214,8 +221,9 @@ Decided while building:
   route (FastAPI + uvicorn), and is the image's command from the start. Phase
   2 adds routes to it. `serve` skips writing a default config.
 - **The pytest extra is in the image**, so `pytest tests/` runs there.
-- **`pdf` needs no change:** it only calls `open` when it exists, and the
-  container has none.
+- **`pdf` opens its output only on a desktop** (`darwin`, `win32`): Debian's
+  TeX packages bring xdg-utils' `open`, so "an `open` exists" no longer
+  meant a Mac.
 - **The Caddyfile goes in before the deploy**, since `bin/deploy` ends by
   checking `https://mdc.rvanegas.co/healthz`. Until the container is up,
   Caddy answers 502 there, which is harmless.
