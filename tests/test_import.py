@@ -41,6 +41,30 @@ def test_claude_export_becomes_exact_chats(library, capsys):
     assert "2 imported, 0 skipped, 0 failed." in out                      # the empty one is nothing
 
 
+def test_each_turns_related_and_references_go_to_the_end(library):
+    def says(sender, text):
+        return {"sender": sender, "content": [{"type": "text", "text": text}]}
+    src = library.parent / "conversations.json"
+    src.write_text(json.dumps([{"uuid": "c-9", "name": "Attention", "created_at": "2026-10-27T10:00:00Z",
+                                "chat_messages": [
+        says("human", "What did I say about attention?"),
+        says("assistant", "You called it a kind of will.\n\n## Related\n\n| *On Attention*\n\n"
+                          "## References\n\n| James (1890) *Principles of Psychology*"),
+        says("human", "And Kant?"),
+        says("assistant", "He came first.\n\n## Related\n\n| *On Attention*\n| *Free Will*\n\n"
+                          "## References\n\n| Kant (1781) *Critique of Pure Reason*"),
+    ]}]))
+    assert main(["import", str(src)]) == 0
+    chat = library / "2026" / "2026-10-27-attention.chat.md"
+    text = chat.read_text()
+    assert check_file(chat) == []
+    assert text.count("## Related") == 1 and text.count("## References") == 1
+    assert text.index("He came first.") < text.index("## Related") < text.index("## References")
+    assert "## Related\n\n| *On Attention*\n| *Free Will*\n\n" in text
+    assert text.endswith("## References\n\n| James (1890) *Principles of Psychology*\n"
+                         "| Kant (1781) *Critique of Pure Reason*\n")
+
+
 def test_saveai_export_becomes_a_chat(library):
     src = library.parent / "2026-08-03-verbal-disputes.md"
     shutil.copy(FIXTURES / "saveai_export.md", src)

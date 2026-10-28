@@ -2,7 +2,9 @@
 
 - claude.ai's data export (the zip, or its conversations.json): each
   conversation becomes `<date>-<slug>.chat.md`, its turns exactly as exported,
-  following the active branch when messages were edited.
+  following the active branch when messages were edited — except that each
+  turn's `## Related` and `## References` are gathered into one of each at
+  the end, as `reply` keeps them.
 - saveai.net exports (the "AI Chat Exporter" Markdown `mdc fix` converts:
   `# you asked` / `# claude response` blocks): a `.chat.md`.
 - Anything else, or an export that does not parse: a `.document.md`, its
@@ -25,6 +27,7 @@ from pathlib import Path
 from mdc.config import ASSISTANT_NAME, PROMPT_HEADING, load_config
 from mdc.form import _parse_exported_chat, check_file, is_exported_chat, slugify
 from mdc.text_utils import _upgrade_reply_headings
+from mdc.transcript import collect_citations, with_citations
 
 
 @dataclass
@@ -77,14 +80,28 @@ def _message_text(message: dict) -> str:
 
 
 def _turns_text(turns: list[tuple[str, str]]) -> str:
-    """`## <speaker>` sections, consecutive turns of one speaker joined."""
+    """`## <speaker>` sections, consecutive turns of one speaker joined.
+
+    A turn's own '## Related' and '## References' (reply's convention, which
+    claude.ai follows through the MCP guide) are taken out of it and gathered
+    into one of each at the end, as reply keeps them.
+    """
     merged: list[tuple[str, str]] = []
+    related: list[str] = []
+    references: list[str] = []
     for speaker, text in turns:
+        text, cited, refs = collect_citations(_upgrade_reply_headings(text))
+        related += cited
+        references += refs
+        text = text.strip()
+        if not text:
+            continue
         if merged and merged[-1][0] == speaker:
             merged[-1] = (speaker, merged[-1][1] + "\n\n" + text)
         else:
             merged.append((speaker, text))
-    return "\n\n".join(f"## {speaker}\n\n{_upgrade_reply_headings(text)}" for speaker, text in merged)
+    body = "\n\n".join(f"## {speaker}\n\n{text}" for speaker, text in merged)
+    return with_citations(body, related, references).strip("\n")
 
 
 def from_claude_conversation(conversation: dict) -> Imported | None:

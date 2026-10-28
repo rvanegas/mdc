@@ -314,6 +314,71 @@ def extract_related(reply: str) -> tuple[str, list[str]]:
     return body, titles
 
 
+def collect_citations(text: str) -> tuple[str, list[str], list[str]]:
+    """Take every ## Related and ## References section out of text, wherever it is.
+
+    Returns (rest, related, references). The sections after the last turn
+    come first, so a chat's accumulated lists keep their place ahead of what
+    its turns add; the rest follow in the order they appear. A line in such a
+    section that is not a citation ('| *Title*', '| Author (year) *Title*')
+    stays in the text where it was rather than being lost.
+    """
+    matches = list(HEADING_RE.finditer(text))
+    sections = [
+        (m.group(2).strip(), m.start(), matches[i + 1].start() if i + 1 < len(matches) else len(text))
+        for i, m in enumerate(matches)
+    ]
+    cited = [s for s in sections if s[0] in ("Related", "References")]
+    if not cited:
+        return text, [], []
+    last_turn = max((s[1] for s in sections if s[0] not in ("Notes", "Related", "References")), default=-1)
+    trailing = [s for s in cited if s[1] > last_turn]
+    order = trailing + [s for s in cited if s[1] < last_turn]
+
+    related: list[str] = []
+    references: list[str] = []
+    kept: dict[int, list[str]] = {}
+    for name, start, end in order:
+        lines = text[start:end].splitlines()[1:]
+        left: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if name == "Related" and stripped.startswith("| "):
+                related.append(_normalize_related(stripped))
+            elif name == "References" and REFERENCE_LINE_RE.match(stripped):
+                references.append(_normalize_ref(stripped))
+            elif stripped:
+                left.append(line)
+        kept[start] = left
+
+    pieces: list[str] = []
+    cursor = 0
+    for _, start, end in sorted(cited, key=lambda s: s[1]):
+        pieces.append(text[cursor:start].rstrip("\n"))
+        if kept[start]:
+            pieces.append("\n".join(kept[start]))
+        cursor = end
+    pieces.append(text[cursor:])
+    rest = "\n\n".join(p for p in pieces if p.strip()).rstrip() + "\n"
+    return rest, related, references
+
+
+def with_citations(text: str, related: list[str], references: list[str]) -> str:
+    """text, which holds no Related or References section, with one of each at the end.
+
+    Related keeps its order, each title once; References is sorted as
+    insert_references keeps it. An empty list adds no section.
+    """
+    titles = list(dict.fromkeys(related))
+    refs = insert_references([], references)
+    out = text.rstrip()
+    if titles:
+        out += "\n\n## Related\n\n" + "\n".join(titles)
+    if refs:
+        out += "\n\n## References\n\n" + "\n".join(refs)
+    return out + "\n"
+
+
 def update_related_section(text: str, titles: list[str]) -> str:
     """Replace (or insert before ## References) the ## Related section."""
     related_heading = _RELATED_HEADING_RE.search(text)
