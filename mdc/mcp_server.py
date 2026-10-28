@@ -1,23 +1,23 @@
 """claude.ai's way into a library: an MCP server at /mcp (SERVER.md, Phase 5).
 
-The tools `mdc reply` gives the model, on the caller's libraries, for Claude
-anywhere a custom connector reaches (claude.ai on the web and the phone,
-Claude Desktop, Claude Code). They run in-process on the server's copy of
-the library, which is canonical; a client's next `mdc sync` brings their
-writes down, and a file also changed there becomes a `.server` conflict.
+The reading tools `mdc reply` gives the model, on the caller's libraries, for
+Claude anywhere a custom connector reaches (claude.ai on the web and the
+phone, Claude Desktop, Claude Code). They run in-process on the server's copy
+of the library, which is canonical.
 
 Callers authenticate with a bearer token: an OAuth access token from mdc's
 own authorization server (oauth.py; claude.ai's connector signs in there with
 the person's mdc token), or a minted mdc token sent as it is (Claude Code).
 
-Writes (edit_file, append_turn) take the library's lock, as /run does, and
-keep reply's numbered backups in REVISIONS/.
+Nothing here writes. edit_file is `mdc reply`'s alone, and append_turn is
+gone: claude.ai edits with its own documents, and a conversation reaches the
+library by its export and `mdc import`, which is whole where a turn-by-turn
+write depended on Claude remembering to make it.
 """
 
 from __future__ import annotations
 
 import os
-import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -28,28 +28,17 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 
 from mdc import library as lib
-from mdc.config import load_config
-from mdc.edit_tools import _ARGUMENT_FORMAT, _EDIT_INSTRUCTIONS, build_edit_context, make_edit_executor
-from mdc.form import fix_section_spacing, slugify
 from mdc.oauth import provider
-from mdc.service import LibraryError, library_ids, library_root, lock_for
-from mdc.text_utils import _upgrade_reply_headings
+from mdc.service import LibraryError, library_ids, library_root
 
-
-_SPEAKER_RE = re.compile(r"^[^\s#]+$")
-_STRUCTURAL_RE = re.compile(r"^## (Notes|Related|References)\s*$", re.MULTILINE)
 
 INSTRUCTIONS = "\n\n".join([
     "These tools reach the user's mdc library: their own writing (chats, documents, "
     "argument files) and the sources they keep. Files are named "
     "<date>-<slug>.<role>.<ext>, the role one of chat, document, source, argument, "
     "analysis, review; a name is unique across the library. Use list_documents to find "
-    "names, read_file to read one, and edit_file only on a .document.md or .argument.md. "
-    "To keep this conversation in the library, call append_turn after each exchange: "
-    "the user's message as speaker \"Prompt\", your reply as \"Claude\".",
+    "names and read_file to read one. Nothing in the library is written from here.",
     lib.LIBRARY_TOOLS_PROMPT,
-    _EDIT_INSTRUCTIONS,
-    _ARGUMENT_FORMAT,
 ])
 
 
@@ -158,13 +147,6 @@ def _find(root: Path, name: str) -> Path:
     return found[0]
 
 
-async def _locked(root: Path):
-    lock = lock_for(root)
-    if lock.locked():
-        raise ToolError("the library is busy with a run; try again shortly")
-    return lock
-
-
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -172,9 +154,8 @@ async def _locked(root: Path):
 @_tool
 def guide() -> str:
     """The user's mdc library: read this once per conversation, before the other
-    mdc tools. How the library is organized, how to find and cite its documents,
-    the rules for editing documents and argument files, and how to keep this
-    conversation in the library."""
+    mdc tools. How the library is organized, and how to find and cite its
+    documents."""
     return INSTRUCTIONS
 
 
@@ -221,57 +202,3 @@ def read_file(name: str, library: str | None = None) -> str:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return f"{name} is not text (a {path.suffix} file); it can be linked from a chat, not read here."
-
-
-@_tool
-async def edit_file(name: str, old_str: str, new_str: str, library: str | None = None) -> str:
-    """Replace old_str, which must occur exactly once in the file, with new_str,
-    in a .document.md (the user's prose) or .argument.md; nothing else is edited.
-    Apply the change directly, then say in a sentence or two what changed. In an
-    .argument.md, which holds only a '## Argument' list ('- 3 (from: 1, 2): text'),
-    never renumber or reorder propositions: add new ones at the end with the next
-    number. A numbered version is kept; returns the diff. See guide."""
-    root = _root(library)
-    path = _find(root, name)
-    if not path.name.endswith((".document.md", ".argument.md")):
-        raise ToolError("only a .document.md or .argument.md is edited")
-    async with await _locked(root):
-        wrap, revisions = load_config().wrap_width, root / "REVISIONS"
-        # As reply does: record the version being edited before the first edit.
-        build_edit_context([path], wrap_width=wrap, revisions_dir=revisions)
-        execute = make_edit_executor([path], wrap_width=wrap, revisions_dir=revisions)
-        return execute("edit_file", {"path": path.name, "old_str": old_str, "new_str": new_str})
-
-
-@_tool
-async def append_turn(name: str, speaker: str, text: str, library: str | None = None) -> str:
-    """Keep this conversation in the library: add a turn to a .chat.md, before its
-    Notes, Related and References. speaker is a one-word heading: "Prompt" for
-    the user's message, as they wrote it, "Claude" for your reply. When the user
-    wants the conversation kept, call it after each exchange, the user's turn
-    first. A chat named <date>-<slug>.chat.md (today's date, a slug of its title)
-    that does not exist yet is created in its year."""
-    root = _root(library)
-    if not name.endswith(".chat.md") or "/" in name:
-        raise ToolError("append_turn writes to a <date>-<slug>.chat.md, named")
-    if not _SPEAKER_RE.match(speaker):
-        raise ToolError("speaker is one word, such as Prompt or Claude")
-    body = _upgrade_reply_headings(text.strip())
-    async with await _locked(root):
-        try:
-            path = _find(root, name)
-            current = path.read_text(encoding="utf-8")
-        except ToolError:
-            m = re.match(r"^(\d{4})-(\d{2})-(\d{2})-(.+)\.chat\.md$", name)
-            if not m or slugify(m.group(4).replace("-", " ")) != m.group(4):
-                raise ToolError("a new chat is named <yyyy-mm-dd>-<slug>.chat.md") from None
-            path = root / m.group(1) / name
-            path.parent.mkdir(exist_ok=True)
-            title = m.group(4).replace("-", " ").capitalize()
-            current = f"\n# {title}\n{name[:10]}\n"
-        structural = _STRUCTURAL_RE.search(current)
-        cut = structural.start() if structural else len(current)
-        new = current[:cut].rstrip("\n") + f"\n\n## {speaker}\n\n{body}\n\n" + current[cut:]
-        new, _ = fix_section_spacing(new)
-        path.write_text(new, encoding="utf-8")
-    return f"Added a {speaker} turn to {path.relative_to(root).as_posix()}."

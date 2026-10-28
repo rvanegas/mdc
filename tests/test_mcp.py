@@ -13,7 +13,6 @@ import httpx
 import pytest
 import uvicorn
 
-from mdc.form import check_file
 
 CHAT = "\n# Old Roman\n2025-04-25\n\n## Prompt\n\nHello.\n\n## Claude\n\nHi.\n\n## Related\n\n| *Essay*\n"
 DOC = "\n# Essay\n2026-10-27\n\nProse here.\n"
@@ -93,12 +92,11 @@ def test_tools_and_auth(library):
     root, url = library
     tools = {t.name: t.description for t in call(url, "ann", None, None).tools}
     assert list(tools) == ["guide", "list_documents", "lookup_term", "read_document",
-                           "read_file", "edit_file", "append_turn"]
+                           "read_file"]
     # claude.ai shows the model tool descriptions, not server instructions:
     # the guidance travels in guide, and the essentials in the descriptions.
     assert "<date>-<slug>.<role>.<ext>" in text(call(url, "ann", "guide", {}))
     assert "<date>-<slug>.<role>.<ext>" in tools["list_documents"]
-    assert "never renumber" in tools["edit_file"]
     assert "| *Exact Title*" in tools["read_document"]
     assert httpx.post(f"{url}/mcp", json={}).status_code == 401
     assert httpx.post(f"{url}/mcp", json={}, headers={"Authorization": "Bearer nope"}).status_code == 401
@@ -117,44 +115,19 @@ def test_reading(library):
     assert bad.is_error
 
 
-def test_edit_keeps_a_backup_and_spares_sources(library):
+def test_nothing_writes(library):
+    # claude.ai edits with its own documents, and a conversation reaches the
+    # library by its export and mdc import: edit_file is mdc reply's alone,
+    # and append_turn is gone.
     root, url = library
-    result = call(url, "ann", "edit_file", {"name": "2026-10-27-essay.document.md",
-                                             "old_str": "Prose here.", "new_str": "Prose, edited."})
-    assert not result.is_error and "Prose, edited." in text(result)
-    assert "Prose, edited." in (root / "2026" / "2026-10-27-essay.document.md").read_text()
-    assert (root / "REVISIONS" / "2026-10-27-essay.document--1.md").read_text() == DOC
-    assert "Prose, edited." in (root / "REVISIONS" / "2026-10-27-essay.document--2.md").read_text()
-    for name in ("2026-10-19-parfit2011.source.md", "2025-04-25-old-roman.chat.md"):
-        assert call(url, "ann", "edit_file", {"name": name, "old_str": "a", "new_str": "b"}).is_error
-
-
-def test_append_turn(library):
-    root, url = library
-    call(url, "ann", "append_turn", {"name": "2025-04-25-old-roman.chat.md", "speaker": "Prompt",
-                                     "text": "And then?\n\n## A heading"})
-    chat = (root / "2025" / "2025-04-25-old-roman.chat.md").read_text()
-    assert chat.index("And then?") < chat.index("## Related")
-    assert "### A heading" in chat
-    call(url, "ann", "append_turn", {"name": "2026-10-27-a-new-talk.chat.md", "speaker": "Prompt", "text": "Hi."})
-    call(url, "ann", "append_turn", {"name": "2026-10-27-a-new-talk.chat.md", "speaker": "Claude", "text": "Hello."})
-    new = root / "2026" / "2026-10-27-a-new-talk.chat.md"
-    assert check_file(new) == []
-    assert call(url, "ann", "append_turn", {"name": "x.chat.md", "speaker": "two words", "text": "x"}).is_error
-
-
-def test_writes_wait_for_a_run(library):
-    from mdc import service
-    root, url = library
-    lock = service.lock_for(root)
-    asyncio.run(lock.acquire())
-    try:
-        result = call(url, "ann", "edit_file", {"name": "2026-10-27-essay.document.md",
-                                                 "old_str": "Prose", "new_str": "Verse"})
-        assert result.is_error and "busy" in text(result)
-    finally:
-        lock.release()
-        service.locks.clear()
+    for tool, args in (
+        ("edit_file", {"name": "2026-10-27-essay.document.md", "old_str": "Prose here.", "new_str": "Edited."}),
+        ("append_turn", {"name": "2025-04-25-old-roman.chat.md", "speaker": "Prompt", "text": "Hi."}),
+    ):
+        assert call(url, "ann", tool, args).is_error
+        assert tool not in text(call(url, "ann", "guide", {}))
+    assert (root / "2026" / "2026-10-27-essay.document.md").read_text() == DOC
+    assert (root / "2025" / "2025-04-25-old-roman.chat.md").read_text() == CHAT
 
 
 def test_another_users_library_is_out_of_reach(library):

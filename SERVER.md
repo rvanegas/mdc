@@ -568,12 +568,16 @@ The plan:
   - `read_file(name)`: a chat, document, argument or source by name.
   - `edit_file(name, old_str, new_str)`: exact replacement in a `.document.md`
     or `.argument.md` (never a source), with `reply`'s numbered backup,
-    paragraph wrapping, and the returned diff.
+    paragraph wrapping, and the returned diff. **Withdrawn 2026-10-27**:
+    claude.ai users edit with claude.ai's own documents and import them into
+    the library later, so `edit_file` is `mdc reply`'s alone.
   - `append_turn(name, speaker, text)`: adds a turn to a `.chat.md`, created
     when missing (`speaker`: the user's heading or `Claude`), so a claude.ai
     conversation can be kept as it goes. Unreliable by nature: Claude may
     forget to call it, and `mdc import` repairs or replaces the transcript
-    afterwards.
+    afterwards. **Withdrawn 2026-10-27**, for that reason: import alone is
+    the way a claude.ai conversation reaches the library, whole, its
+    Related and References gathered at the end. The server no longer writes.
   - Later: `analyze`, `audit` (through dianoia), `new_session` (a
     `.chat.md` + `.document.md` pair).
   The rules `reply` puts in its system prompt (the editing instructions, the
